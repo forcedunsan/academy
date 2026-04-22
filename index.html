@@ -53,22 +53,22 @@
       /* print-target으로 지정된 요소와 그 자식만 보이게 */
       .print-target, .print-target * { visibility: visible !important; }
       
-      /* print-target을 페이지 상단에 배치 */
+      /* print-target을 페이지 중앙에 배치 (가로 가운데 정렬) */
       .print-target {
         position: absolute !important;
         top: 0 !important;
         left: 0 !important;
-        margin: 0 !important;
+        right: 0 !important;
+        margin: 0 auto !important;
         padding: 0 !important;
         width: 600px !important;
         max-width: 600px !important;
         box-shadow: none !important;
       }
       
-      /* 페이지 설정: 컨텐츠 크기에 맞춤, 여백 없음 */
+      /* 페이지 여백 */
       @page {
-        size: 600px auto;
-        margin: 0;
+        margin: 8mm;
       }
       
       /* 배경 색상 인쇄 강제 */
@@ -660,7 +660,10 @@ function InvoiceView({ student, settings, invoiceRef }) {
   const greeting1 = settings.greetingLine1.replace('{학원명}', settings.academyName);
 
   return (
-    <div ref={invoiceRef} className="invoice-navy" style={{ width: '560px', color: 'white' }}>
+    <div ref={invoiceRef} className="invoice-navy" style={{ 
+      width: '560px', 
+      color: 'white',
+    }}>
       {/* 헤더 */}
       <div className="wave-bg px-8 pt-10 pb-14 text-center relative">
         <div className="invoice-gold-text text-[11px] tracking-[0.25em] font-semibold mb-3">
@@ -2453,13 +2456,16 @@ function InvoiceTab({ students, settings, selectedId, onSelect }) {
             <>
             {(activeView === 'invoice' || activeView === 'all') && (
               <div className="mb-4">
-                <div className="mb-2 flex justify-end gap-2">
-                  <button onClick={() => exportPDF(invoiceRef)} disabled={exportingType !== null} className="px-3 py-1.5 bg-purple-600 text-white rounded text-xs font-semibold disabled:bg-gray-400" title="브라우저 인쇄로 고품질 PDF 저장 (한글 정확)">
-                    📄 안내문 PDF
-                  </button>
-                  <button onClick={() => exportSingle(invoiceRef, '수강료안내', '#1a2344')} disabled={exportingType !== null} className="px-3 py-1.5 bg-blue-600 text-white rounded text-xs font-semibold disabled:bg-gray-400">
-                    {exportingType === '수강료안내' ? '저장 중...' : '🖼️ 안내문 PNG'}
-                  </button>
+                <div className="mb-2 flex justify-between items-center">
+                  <span className="text-[11px] text-gray-500">💡 카톡 전송은 <strong className="text-purple-600">PDF</strong> 또는 <strong className="text-blue-600">화면 캡처</strong>(Win+Shift+S)를 권장합니다</span>
+                  <div className="flex gap-2">
+                    <button onClick={() => exportPDF(invoiceRef)} disabled={exportingType !== null} className="px-3 py-1.5 bg-purple-600 text-white rounded text-xs font-semibold disabled:bg-gray-400 shadow" title="브라우저 인쇄로 고품질 PDF 저장 (한글 정확, 추천)">
+                      📄 안내문 PDF ⭐
+                    </button>
+                    <button onClick={() => exportSingle(invoiceRef, '수강료안내', '#1a2344')} disabled={exportingType !== null} className="px-3 py-1.5 bg-blue-600 text-white rounded text-xs font-semibold disabled:bg-gray-400">
+                      {exportingType === '수강료안내' ? '저장 중...' : '🖼️ 안내문 PNG'}
+                    </button>
+                  </div>
                 </div>
                 <div className="flex justify-center">
                   <InvoiceView student={student} settings={settings} invoiceRef={invoiceRef} />
