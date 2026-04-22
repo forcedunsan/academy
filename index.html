@@ -22,6 +22,8 @@
   <script src="https://unpkg.com/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/modern-screenshot@4.5.1/dist/index.umd.js"></script>
   <script src="https://unpkg.com/jszip@3.10.1/dist/jszip.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
   <script src="https://unpkg.com/papaparse@5.4.1/papaparse.min.js"></script>
   <script src="https://unpkg.com/jszip@3.10.1/dist/jszip.min.js"></script>
   <link rel="stylesheet" as="style" crossorigin href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css" />
@@ -268,6 +270,8 @@ const SAMPLE_STUDENT = {
   parentContact: '',
   note: '',
   periodDisplay: '', // 자동 또는 수동
+  isWithdrawn: false, // 퇴원 여부 (기본: 재원)
+  withdrawnDate: '', // 퇴원일 (YYYY-MM-DD)
   subjects: [
     { id: uid(), name: '영어', label: '고등 영어', labelNote: '', startDate: '2025-03-10', classDays: [1,3,5], sessionsPerWeek: 3, totalSessions: 12, tuition: 600000 },
     { id: uid(), name: '수학', label: '고등 수학', labelNote: '다과목 할인', startDate: '2025-03-16', classDays: [0,2,4], sessionsPerWeek: 3, totalSessions: 12, tuition: 550000 },
@@ -1506,6 +1510,8 @@ function StudentForm({ student, onSave, onCancel, defaultSettings }) {
     parentContact: '',
     note: '',
     periodDisplay: '',
+    isWithdrawn: false,
+    withdrawnDate: '',
     subjects: [],
     materials: [],
   });
@@ -1632,6 +1638,33 @@ function StudentForm({ student, onSave, onCancel, defaultSettings }) {
             <div className="md:col-span-2">
               <label className="block text-xs font-semibold text-gray-700 mb-1">기간 표시 (선택 — 비우면 자동 계산)</label>
               <input type="text" value={data.periodDisplay || ''} onChange={(e) => updateField('periodDisplay', e.target.value)} className="w-full px-3 py-2 border rounded text-sm" placeholder="예: 2025년 03월 ~ 04월" />
+            </div>
+            <div className="md:col-span-2 p-3 rounded border" style={{ background: data.isWithdrawn ? '#fef2f2' : '#f9fafb', borderColor: data.isWithdrawn ? '#fecaca' : '#e5e7eb' }}>
+              <div className="flex items-center gap-3 flex-wrap">
+                <label className="flex items-center gap-2 text-sm font-semibold cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={data.isWithdrawn || false}
+                    onChange={(e) => updateField('isWithdrawn', e.target.checked)}
+                    className="w-4 h-4"
+                  />
+                  <span className={data.isWithdrawn ? 'text-rose-700' : 'text-gray-700'}>
+                    🚪 퇴원 학생
+                  </span>
+                </label>
+                {data.isWithdrawn && (
+                  <>
+                    <span className="text-xs text-gray-500">퇴원일:</span>
+                    <input
+                      type="date"
+                      value={data.withdrawnDate || ''}
+                      onChange={(e) => updateField('withdrawnDate', e.target.value)}
+                      className="px-2 py-1 border rounded text-sm"
+                    />
+                    <span className="text-xs text-rose-600">통계·안내문 생성에서 제외됩니다</span>
+                  </>
+                )}
+              </div>
             </div>
           </div>
 
@@ -1927,21 +1960,24 @@ const importJSON = (file, onLoad) => {
   reader.readAsText(file);
 };
 
-// 모든 학생을 다음 주기로 이동
+// 모든 학생을 다음 주기로 이동 (퇴원생 제외)
 const advanceAllStudents = (students, holidays) => {
   const holidaySet = new Set((holidays || []).map(h => h.date));
-  return students.map(s => ({
-    ...s,
-    subjects: (s.subjects || []).map(sub => {
-      if (!sub.startDate || !sub.classDays || sub.classDays.length === 0) return sub;
-      const sessions = getClassSessions(parseDate(sub.startDate), sub.classDays, sub.totalSessions, holidaySet);
-      if (sessions.length === 0) return sub;
-      const endDate = sessions[sessions.length - 1].date;
-      const nextStart = getNextClassDay(endDate, sub.classDays, holidaySet);
-      if (!nextStart) return sub;
-      return { ...sub, startDate: formatDateStr(nextStart) };
-    }),
-  }));
+  return students.map(s => {
+    if (s.isWithdrawn) return s; // 퇴원생은 그대로 유지
+    return {
+      ...s,
+      subjects: (s.subjects || []).map(sub => {
+        if (!sub.startDate || !sub.classDays || sub.classDays.length === 0) return sub;
+        const sessions = getClassSessions(parseDate(sub.startDate), sub.classDays, sub.totalSessions, holidaySet);
+        if (sessions.length === 0) return sub;
+        const endDate = sessions[sessions.length - 1].date;
+        const nextStart = getNextClassDay(endDate, sub.classDays, holidaySet);
+        if (!nextStart) return sub;
+        return { ...sub, startDate: formatDateStr(nextStart) };
+      }),
+    };
+  });
 };
 
 // ═══════════════════════════════════════════════════
@@ -1951,7 +1987,14 @@ const advanceAllStudents = (students, holidays) => {
 function StudentListTab({ students, onAdd, onEdit, onDelete, onDuplicate, onSelect, selectedId, onBulkImport, onExportJSON, onImportJSON, onAdvanceAll }) {
   const [search, setSearch] = useState('');
   const [showMenu, setShowMenu] = useState(false);
-  const filtered = students.filter(s => s.name.includes(search));
+  const [showWithdrawn, setShowWithdrawn] = useState(false); // 기본: 재원생만
+  const filtered = students.filter(s => {
+    if (!s.name.includes(search)) return false;
+    if (!showWithdrawn && s.isWithdrawn) return false;
+    return true;
+  });
+  const activeCount = students.filter(s => !s.isWithdrawn).length;
+  const withdrawnCount = students.filter(s => s.isWithdrawn).length;
   const fileInputRef = useRef(null);
 
   const handleFileSelect = (e) => {
@@ -1964,7 +2007,11 @@ function StudentListTab({ students, onAdd, onEdit, onDelete, onDuplicate, onSele
     <div className="space-y-4">
       <div className="flex gap-2 items-center flex-wrap">
         <input type="text" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="🔍 학생 이름 검색..." className="flex-1 min-w-[200px] px-3 py-2 border rounded text-sm" />
-        <span className="text-xs text-gray-500">{filtered.length} / {students.length}명</span>
+        <label className="flex items-center gap-1.5 text-xs cursor-pointer bg-gray-100 px-2.5 py-1.5 rounded border hover:bg-gray-200">
+          <input type="checkbox" checked={showWithdrawn} onChange={(e) => setShowWithdrawn(e.target.checked)} className="w-3.5 h-3.5" />
+          <span>퇴원생 포함{withdrawnCount > 0 && ` (${withdrawnCount})`}</span>
+        </label>
+        <span className="text-xs text-gray-500">{filtered.length} / 재원 {activeCount}명</span>
         <button onClick={onAdd} className="px-4 py-2 bg-blue-600 text-white rounded text-sm font-semibold whitespace-nowrap">+ 학생 추가</button>
         <button onClick={onBulkImport} className="px-4 py-2 bg-indigo-600 text-white rounded text-sm font-semibold whitespace-nowrap">📥 명단 일괄 추가</button>
         <div className="relative">
@@ -2036,10 +2083,17 @@ function StudentListTab({ students, onAdd, onEdit, onDelete, onDuplicate, onSele
               // 전체 학생 중 원본 번호 (검색 필터링 무관하게 원본 순서)
               const originalNumber = students.findIndex(st => st.id === s.id) + 1;
               return (
-                <tr key={s.id} className={`border-b hover:bg-blue-50 cursor-pointer ${selectedId === s.id ? 'bg-blue-50' : ''}`} onClick={() => onSelect(s.id)}>
+                <tr key={s.id} className={`border-b hover:bg-blue-50 cursor-pointer ${selectedId === s.id ? 'bg-blue-50' : ''} ${s.isWithdrawn ? 'opacity-60 bg-gray-50' : ''}`} onClick={() => onSelect(s.id)}>
                   <td className="px-3 py-2 text-center text-gray-400 font-semibold text-xs">{originalNumber}</td>
                   <td className="px-3 py-2">
-                    <div className="font-semibold text-gray-800">{s.name}</div>
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <span className="font-semibold text-gray-800">{s.name}</span>
+                      {s.isWithdrawn && (
+                        <span className="text-[9px] px-1.5 py-0.5 bg-rose-100 text-rose-700 rounded font-semibold" title={s.withdrawnDate ? `퇴원일: ${s.withdrawnDate}` : '퇴원'}>
+                          퇴원
+                        </span>
+                      )}
+                    </div>
                     {(s.schoolName || s.grade) && (
                       <div className="text-[10px] text-gray-500 mt-0.5">
                         {s.schoolName}{s.schoolName && s.grade ? ' · ' : ''}{s.grade}
@@ -2297,14 +2351,19 @@ function InvoiceTab({ students, settings, selectedId, onSelect }) {
   });
 
   const exportAllZip = async () => {
-    const valid = students.filter(s => (s.subjects || []).length > 0);
+    const valid = students.filter(s => !s.isWithdrawn && (s.subjects || []).length > 0);
     if (valid.length === 0) {
-      alert('과목이 입력된 학생이 없습니다. 먼저 학생 정보를 입력해주세요.');
+      alert('과목이 입력된 재원생이 없습니다. 먼저 학생 정보를 입력해주세요.');
       return;
     }
-    const skipped = students.length - valid.length;
+    const withdrawnCount = students.filter(s => s.isWithdrawn).length;
+    const noSubjectCount = students.filter(s => !s.isWithdrawn && (s.subjects || []).length === 0).length;
+    const skippedMsgs = [];
+    if (withdrawnCount > 0) skippedMsgs.push(`퇴원생 ${withdrawnCount}명 제외`);
+    if (noSubjectCount > 0) skippedMsgs.push(`과목 미입력 ${noSubjectCount}명 제외`);
+    const skippedLine = skippedMsgs.length > 0 ? `\n(${skippedMsgs.join(', ')})` : '';
     const msg = `${valid.length}명의 수강료 안내문 + 진행/계획 캘린더를 모두 저장합니다.` +
-                (skipped > 0 ? `\n(과목 미입력 ${skipped}명 제외)` : '') +
+                skippedLine +
                 `\n학생당 폴더 1개, 3장씩 = 총 ${valid.length * 3}장 이미지\n\n시간이 꽤 걸릴 수 있습니다. 진행하시겠습니까?`;
     if (!confirm(msg)) return;
 
@@ -2340,11 +2399,22 @@ function InvoiceTab({ students, settings, selectedId, onSelect }) {
     setBulkExporting(false);
   };
 
+  const [showWithdrawnInSidebar, setShowWithdrawnInSidebar] = useState(false);
+  const sidebarStudents = showWithdrawnInSidebar ? students : students.filter(s => !s.isWithdrawn);
+  const activeCount = students.filter(s => !s.isWithdrawn).length;
+  const withdrawnCountInTab = students.filter(s => s.isWithdrawn).length;
+
   return (
     <div className="grid grid-cols-1 lg:grid-cols-[280px_1fr] gap-4">
       {/* 학생 선택 */}
       <div className="bg-white rounded-lg border p-3 lg:max-h-[85vh] lg:overflow-y-auto">
-        <h3 className="font-bold text-sm mb-2 text-gray-700">학생 ({students.length}명)</h3>
+        <h3 className="font-bold text-sm mb-2 text-gray-700">재원생 ({activeCount}명)</h3>
+        {withdrawnCountInTab > 0 && (
+          <label className="flex items-center gap-1.5 text-[11px] text-gray-500 cursor-pointer mb-2 px-2 py-1 bg-gray-50 rounded hover:bg-gray-100">
+            <input type="checkbox" checked={showWithdrawnInSidebar} onChange={(e) => setShowWithdrawnInSidebar(e.target.checked)} className="w-3 h-3" />
+            <span>퇴원생 포함 ({withdrawnCountInTab})</span>
+          </label>
+        )}
         <button
           onClick={exportAllZip}
           disabled={bulkExporting || students.length === 0}
@@ -2362,12 +2432,15 @@ function InvoiceTab({ students, settings, selectedId, onSelect }) {
           </div>
         )}
         <div className="space-y-1">
-          {students.map((s) => {
+          {sidebarStudents.map((s) => {
             const sc = (s.subjects || []).length;
             return (
-              <button key={s.id} onClick={() => onSelect(s.id)} className={`w-full text-left px-3 py-2 rounded text-sm transition ${selectedId === s.id ? 'invoice-navy text-white font-semibold' : 'hover:bg-gray-100 text-gray-700'}`}>
+              <button key={s.id} onClick={() => onSelect(s.id)} className={`w-full text-left px-3 py-2 rounded text-sm transition ${selectedId === s.id ? 'invoice-navy text-white font-semibold' : 'hover:bg-gray-100 text-gray-700'} ${s.isWithdrawn ? 'opacity-60' : ''}`}>
                 <div className="flex items-center justify-between">
-                  <span>{s.name}</span>
+                  <span className="flex items-center gap-1">
+                    {s.name}
+                    {s.isWithdrawn && <span className="text-[9px] px-1 py-0 bg-rose-100 text-rose-700 rounded">퇴원</span>}
+                  </span>
                   <span className={`text-[10px] ${selectedId === s.id ? 'text-white/70' : sc === 0 ? 'text-orange-500' : 'text-gray-400'}`}>
                     {sc === 0 ? '과목 미입력' : `${sc}과목`}
                   </span>
@@ -2542,6 +2615,357 @@ function InvoiceTab({ students, settings, selectedId, onSelect }) {
             <CalendarView student={bulkCurrentStudent} settings={settings} mode="current" calendarRef={bulkCurrentRef} />
           )}
           <CalendarView student={bulkCurrentStudent} settings={settings} mode="plan" calendarRef={bulkPlanRef} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════
+//  6.5. 통계·리포트 탭 (엑셀 다운로드 + 월별 수입 그래프)
+// ═══════════════════════════════════════════════════
+
+function ReportsTab({ students, settings }) {
+  const chartRef = React.useRef(null);
+  const chartInstanceRef = React.useRef(null);
+  
+  // 재원생만 필터
+  const activeStudents = students.filter(s => !s.isWithdrawn);
+  const withdrawnStudents = students.filter(s => s.isWithdrawn);
+  
+  // 연도 선택 상태
+  const currentYear = new Date().getFullYear();
+  const [selectedYear, setSelectedYear] = React.useState(currentYear);
+  
+  // 학생 총 금액 계산 (교습비 + 교재비)
+  const getStudentAmount = (s) => {
+    const tuition = (s.subjects || []).reduce((sum, sub) => sum + (Number(sub.tuition) || 0), 0);
+    const material = (s.materials || []).reduce((sum, m) => sum + (Number(m.amount) || 0), 0);
+    return { tuition, material, total: tuition + material };
+  };
+  
+  // 월별 통계 계산
+  const getMonthlyStats = (year) => {
+    const months = [];
+    for (let m = 1; m <= 12; m++) {
+      const ym = `${year}-${String(m).padStart(2, '0')}`;
+      const paidStudents = activeStudents.filter(s => {
+        const p = (s.payments && s.payments[ym]) || {};
+        return p.status === 'paid';
+      });
+      const paidAmount = paidStudents.reduce((sum, s) => sum + getStudentAmount(s).total, 0);
+      const unpaidCount = activeStudents.length - paidStudents.length;
+      months.push({
+        month: m,
+        yearMonth: ym,
+        totalStudents: activeStudents.length,
+        paidCount: paidStudents.length,
+        unpaidCount,
+        paidAmount,
+      });
+    }
+    return months;
+  };
+  
+  const monthlyStats = getMonthlyStats(selectedYear);
+  const yearTotal = monthlyStats.reduce((sum, m) => sum + m.paidAmount, 0);
+  
+  // 차트 그리기
+  React.useEffect(() => {
+    if (!chartRef.current || !window.Chart) return;
+    if (chartInstanceRef.current) {
+      chartInstanceRef.current.destroy();
+    }
+    const ctx = chartRef.current.getContext('2d');
+    chartInstanceRef.current = new window.Chart(ctx, {
+      type: 'bar',
+      data: {
+        labels: monthlyStats.map(m => `${m.month}월`),
+        datasets: [
+          {
+            label: '월별 수입',
+            data: monthlyStats.map(m => m.paidAmount),
+            backgroundColor: 'rgba(99, 102, 241, 0.8)',
+            borderColor: 'rgb(79, 70, 229)',
+            borderWidth: 1,
+            borderRadius: 4,
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              label: (ctx) => `${ctx.parsed.y.toLocaleString()}원`,
+            },
+          },
+        },
+        scales: {
+          y: {
+            beginAtZero: true,
+            ticks: {
+              callback: (value) => value >= 10000 ? `${(value/10000).toFixed(0)}만` : value,
+            },
+          },
+        },
+      },
+    });
+    return () => {
+      if (chartInstanceRef.current) {
+        chartInstanceRef.current.destroy();
+      }
+    };
+  }, [selectedYear, students]);
+  
+  // 엑셀 다운로드
+  const downloadExcel = () => {
+    if (!window.XLSX) {
+      alert('엑셀 라이브러리가 로드되지 않았습니다. 페이지를 새로고침해주세요.');
+      return;
+    }
+    
+    const wb = window.XLSX.utils.book_new();
+    
+    // ─── 시트 1: 전체 학생 월별 납부 현황 ───
+    const sheet1Data = [];
+    // 헤더
+    const header1 = ['번호', '학생명', '학교', '학년'];
+    for (let m = 1; m <= 12; m++) {
+      header1.push(`${m}월 상태`, `${m}월 금액`, `${m}월 납부일`);
+    }
+    header1.push('연간 총액');
+    sheet1Data.push(header1);
+    
+    // 데이터
+    activeStudents.forEach((s, idx) => {
+      const row = [idx + 1, s.name, s.schoolName || '', s.grade || ''];
+      let yearSum = 0;
+      for (let m = 1; m <= 12; m++) {
+        const ym = `${selectedYear}-${String(m).padStart(2, '0')}`;
+        const p = (s.payments && s.payments[ym]) || {};
+        const isPaid = p.status === 'paid';
+        const amount = getStudentAmount(s).total;
+        row.push(isPaid ? '✅ 완납' : '❌ 미납');
+        row.push(isPaid ? amount : 0);
+        row.push(p.paidDate || '');
+        if (isPaid) yearSum += amount;
+      }
+      row.push(yearSum);
+      sheet1Data.push(row);
+    });
+    
+    const ws1 = window.XLSX.utils.aoa_to_sheet(sheet1Data);
+    // 열 너비 설정
+    ws1['!cols'] = [
+      { wch: 6 }, { wch: 10 }, { wch: 14 }, { wch: 8 },
+      ...Array(36).fill({ wch: 10 }),
+      { wch: 14 },
+    ];
+    window.XLSX.utils.book_append_sheet(wb, ws1, `${selectedYear}년 월별 현황`);
+    
+    // ─── 시트 2: 학생별 연간 이력 ───
+    const sheet2Data = [];
+    sheet2Data.push(['학생명', '학교', '학년', '과목 구성', '월 기본금액', '연간 납부 횟수', '연간 총 납부액', '미납 월']);
+    
+    activeStudents.forEach((s) => {
+      const amount = getStudentAmount(s);
+      const subjects = (s.subjects || []).map(sub => sub.label || sub.name).join(', ');
+      let paidCount = 0;
+      let yearSum = 0;
+      const unpaidMonths = [];
+      for (let m = 1; m <= 12; m++) {
+        const ym = `${selectedYear}-${String(m).padStart(2, '0')}`;
+        const p = (s.payments && s.payments[ym]) || {};
+        if (p.status === 'paid') {
+          paidCount++;
+          yearSum += amount.total;
+        } else {
+          unpaidMonths.push(`${m}월`);
+        }
+      }
+      sheet2Data.push([
+        s.name,
+        s.schoolName || '',
+        s.grade || '',
+        subjects,
+        amount.total,
+        `${paidCount}/12`,
+        yearSum,
+        unpaidMonths.join(', ') || '-',
+      ]);
+    });
+    
+    const ws2 = window.XLSX.utils.aoa_to_sheet(sheet2Data);
+    ws2['!cols'] = [
+      { wch: 10 }, { wch: 14 }, { wch: 8 }, { wch: 30 },
+      { wch: 12 }, { wch: 12 }, { wch: 14 }, { wch: 20 },
+    ];
+    window.XLSX.utils.book_append_sheet(wb, ws2, '학생별 연간 이력');
+    
+    // ─── 시트 3: 월별 요약 통계 ───
+    const sheet3Data = [];
+    sheet3Data.push([`${selectedYear}년 월별 요약`]);
+    sheet3Data.push([]);
+    sheet3Data.push(['월', '재원생 수', '납부 완료', '미납자 수', '납부율 (%)', '총 수입']);
+    
+    monthlyStats.forEach(m => {
+      const rate = m.totalStudents > 0 ? ((m.paidCount / m.totalStudents) * 100).toFixed(1) : 0;
+      sheet3Data.push([
+        `${m.month}월`,
+        m.totalStudents,
+        m.paidCount,
+        m.unpaidCount,
+        `${rate}%`,
+        m.paidAmount,
+      ]);
+    });
+    
+    sheet3Data.push([]);
+    sheet3Data.push(['연간 합계', '', '', '', '', yearTotal]);
+    
+    const ws3 = window.XLSX.utils.aoa_to_sheet(sheet3Data);
+    ws3['!cols'] = [
+      { wch: 10 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 16 },
+    ];
+    // 제목 셀 병합
+    ws3['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 5 } }];
+    window.XLSX.utils.book_append_sheet(wb, ws3, '월별 요약');
+    
+    // 파일 다운로드
+    const academyName = (settings.academyName || '학원').replace(/\s+/g, '');
+    const filename = `${academyName}_${selectedYear}년_결제내역_${new Date().toISOString().slice(0,10)}.xlsx`;
+    window.XLSX.writeFile(wb, filename);
+  };
+  
+  // 연도 목록 (현재 연도 기준 -2년 ~ +1년)
+  const yearOptions = [];
+  for (let y = currentYear - 2; y <= currentYear + 1; y++) {
+    yearOptions.push(y);
+  }
+  
+  return (
+    <div className="space-y-4">
+      {/* 헤더 */}
+      <div className="bg-white rounded-lg shadow p-5">
+        <div className="flex items-center justify-between flex-wrap gap-3">
+          <div>
+            <h2 className="text-lg font-bold text-gray-800">📊 통계·리포트</h2>
+            <p className="text-xs text-gray-500 mt-1">
+              재원생 {activeStudents.length}명
+              {withdrawnStudents.length > 0 && ` · 퇴원생 ${withdrawnStudents.length}명 제외`}
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <label className="text-sm text-gray-600">연도:</label>
+            <select
+              value={selectedYear}
+              onChange={(e) => setSelectedYear(Number(e.target.value))}
+              className="border rounded px-3 py-1.5 text-sm"
+            >
+              {yearOptions.map(y => (
+                <option key={y} value={y}>{y}년</option>
+              ))}
+            </select>
+            <button
+              onClick={downloadExcel}
+              className="px-4 py-2 bg-green-600 text-white rounded font-semibold text-sm hover:bg-green-700 shadow"
+              title="월별 결제내역을 엑셀 파일로 다운로드"
+            >
+              📥 엑셀 다운로드
+            </button>
+          </div>
+        </div>
+      </div>
+      
+      {/* 요약 카드 */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div className="bg-white rounded-lg shadow p-4">
+          <div className="text-xs text-gray-500 mb-1">재원생</div>
+          <div className="text-2xl font-bold text-gray-800">{activeStudents.length}명</div>
+        </div>
+        <div className="bg-white rounded-lg shadow p-4">
+          <div className="text-xs text-gray-500 mb-1">{selectedYear}년 총 수입</div>
+          <div className="text-2xl font-bold text-indigo-600">{yearTotal.toLocaleString()}원</div>
+        </div>
+        <div className="bg-white rounded-lg shadow p-4">
+          <div className="text-xs text-gray-500 mb-1">월 평균 수입</div>
+          <div className="text-2xl font-bold text-blue-600">
+            {Math.round(yearTotal / 12).toLocaleString()}원
+          </div>
+        </div>
+        <div className="bg-white rounded-lg shadow p-4">
+          <div className="text-xs text-gray-500 mb-1">올해 최고 수입월</div>
+          <div className="text-2xl font-bold text-emerald-600">
+            {(() => {
+              const max = monthlyStats.reduce((acc, m) => m.paidAmount > acc.paidAmount ? m : acc, monthlyStats[0]);
+              return max.paidAmount > 0 ? `${max.month}월` : '-';
+            })()}
+          </div>
+        </div>
+      </div>
+      
+      {/* 차트 */}
+      <div className="bg-white rounded-lg shadow p-5">
+        <h3 className="font-semibold text-gray-800 mb-3">📈 {selectedYear}년 월별 수입 그래프</h3>
+        <div style={{ height: '300px' }}>
+          <canvas ref={chartRef}></canvas>
+        </div>
+      </div>
+      
+      {/* 월별 상세 테이블 */}
+      <div className="bg-white rounded-lg shadow p-5">
+        <h3 className="font-semibold text-gray-800 mb-3">📋 {selectedYear}년 월별 상세</h3>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b-2 border-gray-200 text-left text-gray-600">
+                <th className="py-2 px-2">월</th>
+                <th className="py-2 px-2 text-right">재원생</th>
+                <th className="py-2 px-2 text-right">납부</th>
+                <th className="py-2 px-2 text-right">미납</th>
+                <th className="py-2 px-2 text-right">납부율</th>
+                <th className="py-2 px-2 text-right">수입</th>
+              </tr>
+            </thead>
+            <tbody>
+              {monthlyStats.map(m => {
+                const rate = m.totalStudents > 0 ? (m.paidCount / m.totalStudents * 100) : 0;
+                return (
+                  <tr key={m.month} className="border-b border-gray-100 hover:bg-gray-50">
+                    <td className="py-2 px-2 font-medium">{m.month}월</td>
+                    <td className="py-2 px-2 text-right">{m.totalStudents}명</td>
+                    <td className="py-2 px-2 text-right text-emerald-600 font-medium">{m.paidCount}명</td>
+                    <td className="py-2 px-2 text-right text-rose-600">{m.unpaidCount}명</td>
+                    <td className="py-2 px-2 text-right">{rate.toFixed(1)}%</td>
+                    <td className="py-2 px-2 text-right font-semibold">{m.paidAmount.toLocaleString()}원</td>
+                  </tr>
+                );
+              })}
+              <tr className="border-t-2 border-gray-300 bg-gray-50 font-bold">
+                <td className="py-3 px-2">연간 합계</td>
+                <td></td><td></td><td></td><td></td>
+                <td className="py-3 px-2 text-right text-indigo-700">{yearTotal.toLocaleString()}원</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      
+      {/* 퇴원생 목록 */}
+      {withdrawnStudents.length > 0 && (
+        <div className="bg-gray-50 rounded-lg border border-gray-300 p-5">
+          <h3 className="font-semibold text-gray-700 mb-2">🚪 퇴원 학생 ({withdrawnStudents.length}명)</h3>
+          <p className="text-xs text-gray-500 mb-3">퇴원 학생은 모든 통계에서 제외됩니다.</p>
+          <div className="flex flex-wrap gap-2">
+            {withdrawnStudents.map(s => (
+              <span key={s.id} className="px-3 py-1 bg-white border border-gray-300 rounded text-xs text-gray-600">
+                {s.name}{s.withdrawnDate ? ` (${s.withdrawnDate})` : ''}
+              </span>
+            ))}
+          </div>
         </div>
       )}
     </div>
@@ -2777,7 +3201,10 @@ function PaymentTab({ students, setStudents }) {
     }));
   };
 
-  const filtered = students.filter(s => {
+  // 재원생만 대상 (퇴원생은 납부 대상 아님)
+  const activeStudents = students.filter(s => !s.isWithdrawn);
+
+  const filtered = activeStudents.filter(s => {
     if (search && !s.name.includes(search)) return false;
     const p = getPayment(s);
     if (filter === 'paid') return p.status === 'paid';
@@ -2785,14 +3212,14 @@ function PaymentTab({ students, setStudents }) {
     return true;
   });
 
-  const paidCount = students.filter(s => getPayment(s).status === 'paid').length;
-  const unpaidCount = students.length - paidCount;
-  const totalAmount = students.reduce((sum, s) => sum + getAmount(s), 0);
-  const paidAmount = students.filter(s => getPayment(s).status === 'paid').reduce((sum, s) => sum + getAmount(s), 0);
+  const paidCount = activeStudents.filter(s => getPayment(s).status === 'paid').length;
+  const unpaidCount = activeStudents.length - paidCount;
+  const totalAmount = activeStudents.reduce((sum, s) => sum + getAmount(s), 0);
+  const paidAmount = activeStudents.filter(s => getPayment(s).status === 'paid').reduce((sum, s) => sum + getAmount(s), 0);
   const unpaidAmount = totalAmount - paidAmount;
 
   const copyUnpaidList = () => {
-    const unpaid = students.filter(s => getPayment(s).status !== 'paid');
+    const unpaid = activeStudents.filter(s => getPayment(s).status !== 'paid');
     if (unpaid.length === 0) { alert('미납자 없음'); return; }
     const text = unpaid.map(s => `${s.name} - ${fmtWon(getAmount(s))}`).join('\n');
     if (navigator.clipboard) {
@@ -3059,6 +3486,7 @@ function App() {
             { id: 'invoices', label: '📋 수강료 안내문' },
             { id: 'students', label: '👥 학생 관리' },
             { id: 'payments', label: '💰 납부 현황' },
+            { id: 'reports', label: '📊 통계·리포트' },
             { id: 'settings', label: '⚙️ 학원 정보' },
           ].map(t => (
             <button key={t.id} onClick={() => setTab(t.id)} className={`px-4 py-2 text-sm font-medium rounded-t-md transition ${tab === t.id ? 'bg-gray-100 text-gray-800' : 'text-white/80 hover:bg-white/10'}`}>
@@ -3102,6 +3530,9 @@ function App() {
         )}
         {tab === 'payments' && (
           <PaymentTab students={students} setStudents={setStudents} />
+        )}
+        {tab === 'reports' && (
+          <ReportsTab students={students} settings={settings} />
         )}
         {tab === 'settings' && (
           <SettingsTab settings={settings} setSettings={setSettings} students={students} />
