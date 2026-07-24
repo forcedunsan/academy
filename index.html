@@ -5740,8 +5740,9 @@ function StatCard({ title, value, color = 'gray' }) {
   );
 }
 
-// 📜 학생 한 명의 전체 납부 이력 (월별)
-function PaymentHistoryModal({ student, onClose }) {
+// 📜 학생 한 명의 전체 납부 이력 (월별) — 바로 수정 가능
+function PaymentHistoryModal({ student, onClose, onUpdate }) {
+  const [newYm, setNewYm] = useState('');
   if (!student) return null;
   // 납부 기록이 있는 달 + 주기 이력이 있는 달을 모두 모음
   const monthSet = new Set(Object.keys(student.payments || {}));
@@ -5776,15 +5777,16 @@ function PaymentHistoryModal({ student, onClose }) {
           </h2>
           <button onClick={onClose} className="text-white/70 hover:text-white text-2xl leading-none">×</button>
         </div>
-        {rows.length === 0 ? (
-          <div className="p-8 text-center text-gray-400 text-sm">납부 기록이 아직 없습니다.<br /><span className="text-[11px]">납부 현황에서 납부완료 처리하거나 주기를 이동하면 기록이 쌓여요.</span></div>
-        ) : (
-          <div className="p-4">
+        <div className="p-4">
+          {rows.length === 0 && (
+            <div className="py-6 text-center text-gray-400 text-sm">납부 기록이 아직 없습니다.<br /><span className="text-[11px]">아래에서 달을 골라 지난 기록을 직접 추가할 수 있어요.</span></div>
+          )}
+          {rows.length > 0 && (
             <table className="w-full text-sm">
               <thead className="bg-gray-50 border-b">
                 <tr>
                   <th className="px-2 py-1.5 text-left font-semibold text-gray-700">월</th>
-                  <th className="px-2 py-1.5 text-left font-semibold text-gray-700">청구 기간</th>
+                  <th className="px-2 py-1.5 text-left font-semibold text-gray-700">청구 기간 · 메모</th>
                   <th className="px-2 py-1.5 text-right font-semibold text-gray-700">금액</th>
                   <th className="px-2 py-1.5 text-center font-semibold text-gray-700">상태</th>
                   <th className="px-2 py-1.5 text-center font-semibold text-gray-700">납부일</th>
@@ -5793,25 +5795,64 @@ function PaymentHistoryModal({ student, onClose }) {
               <tbody>
                 {rows.map(r => (
                   <tr key={r.ym} className={`border-b ${r.status === 'paid' ? 'bg-green-50/40' : ''}`}>
-                    <td className="px-2 py-1.5 font-bold text-gray-800 whitespace-nowrap">{r.ym.slice(0, 4)}.{r.ym.slice(5, 7)}</td>
-                    <td className="px-2 py-1.5 text-[11px] text-gray-500">{r.period || '—'}{r.note && <div className="text-gray-400">{r.note}</div>}</td>
-                    <td className="px-2 py-1.5 text-right text-gray-700 whitespace-nowrap">{r.amount != null ? fmtWon(r.amount) : '—'}</td>
-                    <td className="px-2 py-1.5 text-center">
-                      {r.status === 'paid'
-                        ? <span className="text-[11px] font-bold text-green-700 bg-green-100 px-2 py-0.5 rounded-full">✓ 완납</span>
-                        : <span className="text-[11px] font-bold text-rose-700 bg-rose-100 px-2 py-0.5 rounded-full">미납</span>}
+                    <td className="px-2 py-1.5 font-bold text-gray-800 whitespace-nowrap align-top">{r.ym.slice(0, 4)}.{r.ym.slice(5, 7)}</td>
+                    <td className="px-2 py-1.5 text-[11px] text-gray-500 align-top">
+                      {r.period || '—'}
+                      <input
+                        type="text"
+                        value={r.note}
+                        onChange={(e) => onUpdate(r.ym, { note: e.target.value })}
+                        placeholder="메모"
+                        className="mt-0.5 w-full px-1.5 py-0.5 border rounded text-[11px]"
+                      />
                     </td>
-                    <td className="px-2 py-1.5 text-center text-[11px] text-gray-500 whitespace-nowrap">{r.paidDate || '—'}</td>
+                    <td className="px-2 py-1.5 text-right text-gray-700 whitespace-nowrap align-top">{r.amount != null ? fmtWon(r.amount) : '—'}</td>
+                    <td className="px-2 py-1.5 text-center align-top">
+                      <button
+                        onClick={() => onUpdate(r.ym, r.status === 'paid' ? { status: 'pending', paidDate: '' } : { status: 'paid', paidDate: r.paidDate || formatDateStr(new Date()) })}
+                        className={`text-[11px] font-bold px-2 py-0.5 rounded-full transition ${r.status === 'paid' ? 'text-green-700 bg-green-100 hover:bg-green-200' : 'text-rose-700 bg-rose-100 hover:bg-rose-200'}`}
+                        title="클릭하면 완납 ↔ 미납이 바뀝니다"
+                      >
+                        {r.status === 'paid' ? '✓ 완납' : '미납'}
+                      </button>
+                    </td>
+                    <td className="px-2 py-1.5 text-center align-top">
+                      <input
+                        type="date"
+                        value={r.paidDate || ''}
+                        onChange={(e) => onUpdate(r.ym, { paidDate: e.target.value })}
+                        className="text-[11px] px-1 py-0.5 border rounded"
+                      />
+                    </td>
                   </tr>
                 ))}
               </tbody>
             </table>
+          )}
+
+          {/* 지난 달 기록 직접 추가 */}
+          <div className="mt-3 p-2 bg-indigo-50 border border-indigo-200 rounded flex items-center gap-2 flex-wrap">
+            <span className="text-[11px] font-semibold text-indigo-800">➕ 지난 달 기록 추가:</span>
+            <input type="month" value={newYm} onChange={(e) => setNewYm(e.target.value)} className="px-2 py-1 border rounded text-xs" />
+            <button
+              onClick={() => {
+                if (!newYm) { alert('추가할 달을 선택하세요'); return; }
+                if (monthSet.has(newYm)) { alert('이미 목록에 있는 달이에요. 표에서 바로 수정하세요.'); return; }
+                onUpdate(newYm, { status: 'pending', paidDate: '', note: '' });
+                setNewYm('');
+              }}
+              className="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-700 text-white text-[11px] rounded font-semibold"
+            >추가</button>
+            <span className="text-[10px] text-indigo-600">예: 작년 12월 납부 기록을 지금 넣고 싶을 때</span>
+          </div>
+
+          {rows.length > 0 && (
             <div className="mt-2 text-right text-xs text-gray-600">
               완납 합계: <strong className="text-green-700">{fmtWon(paidTotal)}</strong>
             </div>
-            <p className="text-[10px] text-gray-400 mt-1">청구 기간·금액은 "다음 주기로 이동" 시 저장된 이력 기준입니다. 이력이 없는 달은 금액이 — 로 표시될 수 있어요.</p>
-          </div>
-        )}
+          )}
+          <p className="text-[10px] text-gray-400 mt-1">상태·납부일·메모는 여기서 바로 수정되고 자동 저장됩니다. 청구 기간·금액은 "다음 주기로 이동" 시 저장된 이력 기준이라 이력 없는 달은 — 로 표시될 수 있어요.</p>
+        </div>
       </div>
     </div>
   );
@@ -5840,6 +5881,21 @@ function PaymentTab({ students, setStudents, privacyMode }) {
         payments: {
           ...(s.payments || {}),
           [yearMonth]: { ...current, ...patch },
+        },
+      };
+    }));
+  };
+
+  // 임의의 달 납부 기록 수정 (납부 이력 모달에서 사용 — 지난 달 추가·수정)
+  const updatePaymentForMonth = (studentId, ym, patch) => {
+    setStudents(students.map(s => {
+      if (s.id !== studentId) return s;
+      const current = (s.payments && s.payments[ym]) || { status: 'pending', paidDate: '', note: '' };
+      return {
+        ...s,
+        payments: {
+          ...(s.payments || {}),
+          [ym]: { ...current, ...patch },
         },
       };
     }));
@@ -5991,7 +6047,11 @@ function PaymentTab({ students, setStudents, privacyMode }) {
       </div>
 
       {historyStudent && (
-        <PaymentHistoryModal student={students.find(x => x.id === historyStudent.id) || historyStudent} onClose={() => setHistoryStudent(null)} />
+        <PaymentHistoryModal
+          student={students.find(x => x.id === historyStudent.id) || historyStudent}
+          onClose={() => setHistoryStudent(null)}
+          onUpdate={(ym, patch) => updatePaymentForMonth(historyStudent.id, ym, patch)}
+        />
       )}
     </div>
   );
