@@ -234,7 +234,7 @@ const applyScheduleAdjustments = (sessions, allAdj, opts) => {
       dateStr: adj ? adj.newDate : k,
       autoNum: s.sessionNum,
       originalDate: k,
-      adjusted: !!adj,
+      adjusted: !!adj && adj.newDate !== k, // 날짜 그대로면 사유(메모)만 담긴 레코드 → 이동 표시 안 함
       isExtra: false,
       note: (adj && adj.note) || '',
       srcIdx: adj ? adj.srcIdx : -1,
@@ -242,6 +242,31 @@ const applyScheduleAdjustments = (sessions, allAdj, opts) => {
   });
   adds.forEach(a => finals.push({ dateStr: a.date, autoNum: 0, originalDate: null, adjusted: false, isExtra: true, note: a.note || '', srcIdx: a.srcIdx }));
   rescued.forEach(a => finals.push({ dateStr: a.newDate, autoNum: 0, originalDate: null, adjusted: false, isExtra: true, note: a.note || '일정 변경', srcIdx: a.srcIdx }));
+
+  // 휴원일과 겹친 회차(이동·추가로 고정된 날짜에 나중에 휴원일이 등록된 경우)는
+  // 다음 수업 요일(휴원일 제외)로 자동으로 밀어준다
+  if (opts.holidaySet && opts.holidaySet.size > 0) {
+    const skipSet2 = new Set(opts.skipHolidays || []);
+    const isHol = (ds) => opts.holidaySet.has(ds) && !skipSet2.has(ds);
+    finals.forEach(f => {
+      if (!isHol(f.dateStr)) return;
+      let d = parseDate(f.dateStr);
+      let iter = 0;
+      while (iter < 60) {
+        d = addDays(d, 1);
+        iter++;
+        const ds = formatDateStr(d);
+        const dow = d.getDay();
+        const dayOk = !opts.classDays || opts.classDays.length === 0 || opts.classDays.includes(dow);
+        if (!isHol(ds) && dayOk) {
+          f.dateStr = ds;
+          f.holidayShifted = true;
+          break;
+        }
+      }
+    });
+  }
+
   if (adds.length + rescued.length > 0) finals.sort((x, y) => x.dateStr.localeCompare(y.dateStr));
   finals.forEach((f, i) => { f.num = i + 1; });
   return { finals, deleted: deletes };
@@ -478,7 +503,7 @@ function buildSessionMap(student, settings, mode) {
     // 추가 수업 표시 범위: 계획=주기 시작일 이후 전부, 진행=지난 주기 시작 ~ 계획 시작 전날
     const addFrom = mode === 'plan' ? newCycleStartStr : cycleStartStr;
     const addTo = mode === 'plan' ? '' : formatDateStr(addDays(newCycleStart, -1));
-    const { finals } = applyScheduleAdjustments(sessions, sub.adjustments, { cycleStartStr, cycleEndStr, addFrom, addTo });
+    const { finals } = applyScheduleAdjustments(sessions, sub.adjustments, { cycleStartStr, cycleEndStr, addFrom, addTo, holidaySet, classDays: sub.classDays, skipHolidays: sub.skipHolidays });
 
     finals.forEach(f => {
       if (!sessionMap.has(f.dateStr)) sessionMap.set(f.dateStr, []);
@@ -487,8 +512,8 @@ function buildSessionMap(student, settings, mode) {
         subjectName: sub.name,
         sessionNum: f.num,
         absent: absentDateSet.has(f.dateStr) || (!!f.originalDate && absentDateSet.has(f.originalDate)),
-        adjusted: f.adjusted,
-        originalDate: f.adjusted ? f.originalDate : null,
+        adjusted: f.adjusted || !!f.holidayShifted,
+        originalDate: (f.adjusted || f.holidayShifted) ? f.originalDate : null,
         isExtra: f.isExtra,
         note: f.note,
       });
@@ -725,49 +750,63 @@ function CalendarView({ student, settings, mode, calendarRef }) {
                         {holiday}
                       </div>
                     )}
-                    {isCurrentMonth && !holiday && sessions.map((s, si) => {
+                    {isCurrentMonth && sessions.map((s, si) => {
                       const color = subjectColors.find(sc => sc.index === s.subjectIndex)?.color;
                       if (!color) return null;
-                      
+
                       // 보강 표시
                       if (s.isMakeup) {
                         return (
-                          <div key={si} style={{
+                          <React.Fragment key={si}>
+                            <div style={{
+                              fontSize: '10px',
+                              color: '#0891b2',
+                              fontWeight: 800,
+                              lineHeight: 1.2,
+                              marginTop: '2px',
+                              background: '#cffafe',
+                              padding: '1px 4px',
+                              borderRadius: '3px',
+                              border: '1px solid #67e8f9',
+                              letterSpacing: '-0.02em',
+                              textAlign: 'center',
+                            }} title={s.makeupNote || '보강'}>
+                              🔵{s.subjectName}보강
+                            </div>
+                            {s.makeupNote && (
+                              <div style={{ fontSize: '8px', color: '#0e7490', lineHeight: 1.15, marginTop: '1px', textAlign: 'center', wordBreak: 'keep-all' }}>
+                                {s.makeupNote}
+                              </div>
+                            )}
+                          </React.Fragment>
+                        );
+                      }
+
+                      return (
+                        <React.Fragment key={si}>
+                          <div style={{
                             fontSize: '10px',
-                            color: '#0891b2',
+                            color: s.absent ? '#dc2626' : color.badge,
                             fontWeight: 800,
                             lineHeight: 1.2,
                             marginTop: '2px',
-                            background: '#cffafe',
-                            padding: '1px 4px',
-                            borderRadius: '3px',
-                            border: '1px solid #67e8f9',
+                            textDecoration: s.absent ? 'line-through' : 'none',
+                            textShadow: '0 0 1px rgba(255,255,255,0.5)',
                             letterSpacing: '-0.02em',
                             textAlign: 'center',
-                          }} title={s.makeupNote || '보강'}>
-                            🔵{s.subjectName}보강
+                            background: s.adjusted ? '#fef3c7' : 'transparent',
+                            padding: s.adjusted ? '0 3px' : '0',
+                            borderRadius: s.adjusted ? '3px' : '0',
+                          }} title={s.adjusted ? `원래 ${s.originalDate}에서 변경됨` : ''}>
+                            {s.adjusted && '↪'}{s.subjectName}{s.sessionNum}
+                            {s.absent && <span style={{ marginLeft: '2px', color: '#dc2626', textDecoration: 'none' }}>결</span>}
                           </div>
-                        );
-                      }
-                      
-                      return (
-                        <div key={si} style={{
-                          fontSize: '10px',
-                          color: s.absent ? '#dc2626' : color.badge,
-                          fontWeight: 800,
-                          lineHeight: 1.2,
-                          marginTop: '2px',
-                          textDecoration: s.absent ? 'line-through' : 'none',
-                          textShadow: '0 0 1px rgba(255,255,255,0.5)',
-                          letterSpacing: '-0.02em',
-                          textAlign: 'center',
-                          background: s.adjusted ? '#fef3c7' : 'transparent',
-                          padding: s.adjusted ? '0 3px' : '0',
-                          borderRadius: s.adjusted ? '3px' : '0',
-                        }} title={s.adjusted ? `원래 ${s.originalDate}에서 변경됨` : ''}>
-                          {s.adjusted && '↪'}{s.subjectName}{s.sessionNum}
-                          {s.absent && <span style={{ marginLeft: '2px', color: '#dc2626', textDecoration: 'none' }}>결</span>}
-                        </div>
+                          {s.note && (
+                            <div style={{ fontSize: '8px', color: '#6b7280', lineHeight: 1.15, marginTop: '1px', textAlign: 'center', wordBreak: 'keep-all' }}>
+                              {s.note}
+                            </div>
+                          )}
+                        </React.Fragment>
                       );
                     })}
                   </div>
@@ -871,7 +910,7 @@ function InvoiceView({ student, settings, invoiceRef }) {
       // 일정 변경(이동·추가·삭제) 반영된 실제 마지막 수업일
       const csStr = formatDateStr(sessions[0].date);
       const ceStr = formatDateStr(sessions[sessions.length - 1].date);
-      const { finals } = applyScheduleAdjustments(sessions, s.adjustments, { cycleStartStr: csStr, cycleEndStr: ceStr, addFrom: s.startDate, addTo: '' });
+      const { finals } = applyScheduleAdjustments(sessions, s.adjustments, { cycleStartStr: csStr, cycleEndStr: ceStr, addFrom: s.startDate, addTo: '', holidaySet, classDays: s.classDays, skipHolidays: s.skipHolidays });
       const lastStr = finals.length > 0 ? finals.map(f => f.dateStr).sort().pop() : ceStr;
       return parseDate(lastStr);
     }).filter(Boolean);
@@ -1145,22 +1184,39 @@ function SchedulePreview({ subject, holidays }) {
     return null;
   }
   const holidaySet = new Set((holidays || []).map(h => h.date));
+  const holOpts = { holidaySet, classDays: subject.classDays, skipHolidays: subject.skipHolidays };
+  const newStart = parseDate(subject.startDate);
+  const newStartStr = formatDateStr(newStart);
 
-  // 계획 주기 (이번 청구): 입력한 시작일부터 정방향
-  const planSessions = getClassSessions(parseDate(subject.startDate), subject.classDays, subject.totalSessions, holidaySet, subject.skipHolidays);
-  const planStart = planSessions.length > 0 ? planSessions[0].date : null;
-  const planEnd = planSessions.length > 0 ? planSessions[planSessions.length - 1].date : null;
+  // 계획 주기 (이번 청구): 자동 계산 + 일정 변경(이동·추가·삭제·휴원일 자동 이동) 반영
+  const planSessions = getClassSessions(newStart, subject.classDays, subject.totalSessions, holidaySet, subject.skipHolidays);
+  let planFinals = [];
+  if (planSessions.length > 0) {
+    const cs = formatDateStr(planSessions[0].date);
+    const ce = formatDateStr(planSessions[planSessions.length - 1].date);
+    planFinals = applyScheduleAdjustments(planSessions, subject.adjustments, { cycleStartStr: cs, cycleEndStr: ce, addFrom: newStartStr, addTo: '', ...holOpts }).finals;
+  }
+  const planDateStrs = planFinals.map(f => f.dateStr).sort();
+  const planStart = planDateStrs.length > 0 ? parseDate(planDateStrs[0]) : null;
+  const planEnd = planDateStrs.length > 0 ? parseDate(planDateStrs[planDateStrs.length - 1]) : null;
   const planComplete = planSessions.length === subject.totalSessions;
 
-  // 다음 주기 (등록 마감일 계산용)
+  // 다음 주기 (등록 마감일 계산용) — 변경 반영된 실제 마지막 수업일 기준
   const nextNextStart = planEnd ? getNextClassDay(planEnd, subject.classDays, holidaySet) : null;
 
-  // 진행 주기 (지난 주기): 신규 등록이 아니면 역산
+  // 진행 주기 (지난 주기): 신규 등록이 아니면 역산 + 일정 변경 반영
   const currentSessions = subject.isNew
     ? []
-    : getPreviousCycleSessions(parseDate(subject.startDate), subject.classDays, subject.totalSessions, holidaySet, subject.skipHolidays);
-  const currentStart = currentSessions.length > 0 ? currentSessions[0].date : null;
-  const currentEnd = currentSessions.length > 0 ? currentSessions[currentSessions.length - 1].date : null;
+    : getPreviousCycleSessions(newStart, subject.classDays, subject.totalSessions, holidaySet, subject.skipHolidays);
+  let currentFinals = [];
+  if (currentSessions.length > 0) {
+    const cs = formatDateStr(currentSessions[0].date);
+    const ce = formatDateStr(currentSessions[currentSessions.length - 1].date);
+    currentFinals = applyScheduleAdjustments(currentSessions, subject.adjustments, { cycleStartStr: cs, cycleEndStr: ce, addFrom: cs, addTo: formatDateStr(addDays(newStart, -1)), ...holOpts }).finals;
+  }
+  const currentDateStrs = currentFinals.map(f => f.dateStr).sort();
+  const currentStart = currentDateStrs.length > 0 ? parseDate(currentDateStrs[0]) : null;
+  const currentEnd = currentDateStrs.length > 0 ? parseDate(currentDateStrs[currentDateStrs.length - 1]) : null;
 
   return (
     <div className="mt-3 p-3 bg-blue-50 border border-blue-200 rounded text-xs">
@@ -1189,7 +1245,7 @@ function SchedulePreview({ subject, holidays }) {
             <span className="font-bold">{fmtKDate(currentStart)}</span>
             <span className="mx-1 text-amber-500">~</span>
             <span className="font-bold">{fmtKDate(currentEnd)}</span>
-            <span className="ml-2 text-amber-700">({currentSessions.length}회차)</span>
+            <span className="ml-2 text-amber-700">({currentFinals.length}회차)</span>
           </div>
         )}
       </div>
@@ -1208,7 +1264,7 @@ function SchedulePreview({ subject, holidays }) {
               <span className="font-bold">{fmtKDate(planStart)}</span>
               <span className="mx-1 text-rose-500">~</span>
               <span className="font-bold">{fmtKDate(planEnd)}</span>
-              <span className="ml-2 text-rose-700">(총 {planSessions.length}회차 · 주 {subject.classDays.length}회)</span>
+              <span className="ml-2 text-rose-700">(총 {planFinals.length}회차 · 주 {subject.classDays.length}회)</span>
               {!planComplete && (
                 <span className="ml-2 text-orange-600 font-semibold">
                   ⚠️ {subject.totalSessions}회 중 {planSessions.length}회만 계산됨
@@ -1227,33 +1283,33 @@ function SchedulePreview({ subject, holidays }) {
       {/* 회차 목록 */}
       {expanded && (
         <>
-          {!subject.isNew && currentSessions.length > 0 && (
+          {!subject.isNew && currentFinals.length > 0 && (
             <div className="mb-2">
               <div className="text-[10px] text-amber-700 font-semibold mb-1">진행 캘린더 회차:</div>
               <div className="grid grid-cols-3 md:grid-cols-4 gap-1">
-                {currentSessions.map((s) => (
-                  <div key={s.sessionNum} className="bg-amber-100 border border-amber-200 rounded px-1.5 py-0.5 text-[11px]">
-                    <span className="text-amber-600">{s.sessionNum}회차</span>
+                {currentFinals.map((f) => (
+                  <div key={f.num} className="bg-amber-100 border border-amber-200 rounded px-1.5 py-0.5 text-[11px]">
+                    <span className="text-amber-600">{f.num}회차</span>
                     <span className="ml-1 font-semibold text-amber-900">
-                      {String(s.date.getMonth() + 1).padStart(2, '0')}/{String(s.date.getDate()).padStart(2, '0')}
+                      {(f.adjusted || f.holidayShifted) && '↪'}{f.isExtra && '➕'}{f.dateStr.slice(5, 7)}/{f.dateStr.slice(8, 10)}
                     </span>
-                    <span className="ml-0.5 text-amber-500 text-[10px]">({DAY_NAMES_KO[s.date.getDay()]})</span>
+                    <span className="ml-0.5 text-amber-500 text-[10px]">({DAY_NAMES_KO[parseDate(f.dateStr).getDay()]})</span>
                   </div>
                 ))}
               </div>
             </div>
           )}
-          {planSessions.length > 0 && (
+          {planFinals.length > 0 && (
             <div>
               <div className="text-[10px] text-rose-700 font-semibold mb-1">계획 캘린더 회차:</div>
               <div className="grid grid-cols-3 md:grid-cols-4 gap-1">
-                {planSessions.map((s) => (
-                  <div key={s.sessionNum} className="bg-rose-100 border border-rose-200 rounded px-1.5 py-0.5 text-[11px]">
-                    <span className="text-rose-600">{s.sessionNum}회차</span>
+                {planFinals.map((f) => (
+                  <div key={f.num} className="bg-rose-100 border border-rose-200 rounded px-1.5 py-0.5 text-[11px]">
+                    <span className="text-rose-600">{f.num}회차</span>
                     <span className="ml-1 font-semibold text-rose-900">
-                      {String(s.date.getMonth() + 1).padStart(2, '0')}/{String(s.date.getDate()).padStart(2, '0')}
+                      {(f.adjusted || f.holidayShifted) && '↪'}{f.isExtra && '➕'}{f.dateStr.slice(5, 7)}/{f.dateStr.slice(8, 10)}
                     </span>
-                    <span className="ml-0.5 text-rose-500 text-[10px]">({DAY_NAMES_KO[s.date.getDay()]})</span>
+                    <span className="ml-0.5 text-rose-500 text-[10px]">({DAY_NAMES_KO[parseDate(f.dateStr).getDay()]})</span>
                   </div>
                 ))}
               </div>
@@ -2139,6 +2195,7 @@ function InteractiveScheduleCalendar({ subject, holidays, absences, onUpdate }) 
   const hasChanges = (subject.adjustments || []).length + (subject.makeups || []).length > 0;
   const [open, setOpen] = useState(hasChanges);
   const [sel, setSel] = useState(null); // {kind:'session'|'makeup'|'empty', ...}
+  const [noteDraft, setNoteDraft] = useState('');
   const [extendBefore, setExtendBefore] = useState(0);
   const [extendAfter, setExtendAfter] = useState(0);
 
@@ -2156,11 +2213,12 @@ function InteractiveScheduleCalendar({ subject, holidays, absences, onUpdate }) 
   const newCycleStartStr = formatDateStr(newCycleStart);
   let planFinals = [], prevFinals = [], deletedRecs = [];
 
+  const holOpts = { holidaySet, classDays: subject.classDays, skipHolidays: subject.skipHolidays };
   const planAuto = getClassSessions(newCycleStart, subject.classDays, subject.totalSessions, holidaySet, subject.skipHolidays);
   if (planAuto.length > 0) {
     const cs = formatDateStr(planAuto[0].date);
     const ce = formatDateStr(planAuto[planAuto.length - 1].date);
-    const res = applyScheduleAdjustments(planAuto, adjustments, { cycleStartStr: cs, cycleEndStr: ce, addFrom: newCycleStartStr, addTo: '' });
+    const res = applyScheduleAdjustments(planAuto, adjustments, { cycleStartStr: cs, cycleEndStr: ce, addFrom: newCycleStartStr, addTo: '', ...holOpts });
     planFinals = res.finals;
     deletedRecs = deletedRecs.concat(res.deleted);
   }
@@ -2169,7 +2227,7 @@ function InteractiveScheduleCalendar({ subject, holidays, absences, onUpdate }) 
     if (prevAuto.length > 0) {
       const cs = formatDateStr(prevAuto[0].date);
       const ce = formatDateStr(prevAuto[prevAuto.length - 1].date);
-      const res = applyScheduleAdjustments(prevAuto, adjustments, { cycleStartStr: cs, cycleEndStr: ce, addFrom: cs, addTo: formatDateStr(addDays(newCycleStart, -1)) });
+      const res = applyScheduleAdjustments(prevAuto, adjustments, { cycleStartStr: cs, cycleEndStr: ce, addFrom: cs, addTo: formatDateStr(addDays(newCycleStart, -1)), ...holOpts });
       prevFinals = res.finals;
       deletedRecs = deletedRecs.concat(res.deleted);
     }
@@ -2217,9 +2275,10 @@ function InteractiveScheduleCalendar({ subject, holidays, absences, onUpdate }) 
     if (f.isExtra) {
       // 추가 수업(또는 살려낸 수정)의 날짜만 갱신
       next = adjustments.map((a, i) => i !== f.srcIdx ? a : (a.type === 'add' ? { ...a, date: target } : { ...a, newDate: target }));
-    } else if (f.adjusted) {
-      // 이미 이동된 회차: 원래 날짜로 되돌리면 레코드 제거, 아니면 새 날짜로 갱신
-      next = target === f.originalDate
+    } else if (f.srcIdx >= 0) {
+      // 기록이 있는 회차(이동됨 또는 사유만 저장됨): 원래 날짜로 되돌리면 레코드 제거(사유 있으면 유지), 아니면 새 날짜로 갱신
+      const rec = adjustments[f.srcIdx];
+      next = (target === f.originalDate && !(rec && rec.note))
         ? adjustments.filter((_, i) => i !== f.srcIdx)
         : adjustments.map((a, i) => i === f.srcIdx ? { ...a, newDate: target } : a);
     } else {
@@ -2233,7 +2292,7 @@ function InteractiveScheduleCalendar({ subject, holidays, absences, onUpdate }) 
     let next;
     if (f.isExtra) {
       next = adjustments.filter((_, i) => i !== f.srcIdx);
-    } else if (f.adjusted) {
+    } else if (f.srcIdx >= 0) {
       next = adjustments.map((a, i) => i === f.srcIdx ? { type: 'delete', sessionNum: f.autoNum, originalDate: f.originalDate, note: a.note || '' } : a);
     } else {
       next = [...adjustments, { type: 'delete', sessionNum: f.autoNum, originalDate: f.originalDate, note: '' }];
@@ -2276,6 +2335,34 @@ function InteractiveScheduleCalendar({ subject, holidays, absences, onUpdate }) 
     setSel(null);
   };
 
+  // 선택된 회차/보강에 사유 저장 (캘린더에 표시됨)
+  const saveNote = () => {
+    if (!sel) return;
+    const text = noteDraft.trim();
+    if (sel.kind === 'makeup') {
+      onUpdate({ makeups: makeups.map((m, i) => i === sel.idx ? { ...m, note: text } : m) });
+      setSel(null);
+      return;
+    }
+    if (sel.kind !== 'session') return;
+    const f = sel.f;
+    let next;
+    if (f.srcIdx >= 0) {
+      next = adjustments.map((a, i) => i === f.srcIdx ? { ...a, note: text } : a);
+      // 이동도 없고 사유도 지웠으면 레코드 자체를 정리
+      const rec = next[f.srcIdx];
+      if (!text && (rec.type === 'modify' || !rec.type) && rec.newDate === rec.originalDate) {
+        next = next.filter((_, i) => i !== f.srcIdx);
+      }
+    } else {
+      if (!text) { setSel(null); return; }
+      // 자동 회차에 사유만 저장: 날짜 그대로의 수정 레코드를 만들어 메모를 담음
+      next = [...adjustments, { type: 'modify', sessionNum: f.autoNum, originalDate: f.originalDate, newDate: f.dateStr, note: text }];
+    }
+    onUpdate({ adjustments: next });
+    setSel(null);
+  };
+
   const resetAll = () => {
     if (!confirm('이 과목의 일정 변경(이동·추가·삭제)과 보강을 모두 초기화할까요?\n자동 계산 일정으로 돌아갑니다.')) return;
     onUpdate({ adjustments: [], makeups: [] });
@@ -2295,13 +2382,16 @@ function InteractiveScheduleCalendar({ subject, holidays, absences, onUpdate }) 
     if (sel && sel.dateStr === dateStr) { setSel(null); return; }
     if (hasSession) {
       const f = entry.plan[0] || entry.prev[0];
+      setNoteDraft(f.note || '');
       setSel({ kind: 'session', cycle: entry.plan[0] ? 'plan' : 'prev', f, dateStr });
       return;
     }
     if (entry.makeups.length > 0) {
+      setNoteDraft(entry.makeups[0].m.note || '');
       setSel({ kind: 'makeup', idx: entry.makeups[0].idx, dateStr });
       return;
     }
+    setNoteDraft('');
     setSel({ kind: 'empty', dateStr });
   };
 
@@ -2327,7 +2417,8 @@ function InteractiveScheduleCalendar({ subject, holidays, absences, onUpdate }) 
           <div className="mb-2 p-2 bg-gray-50 border border-gray-200 rounded text-[11px] text-gray-600 leading-relaxed">
             💡 <strong>회차를 클릭</strong> → 원하는 <strong>빈 날짜를 클릭</strong>하면 그 날로 이동해요. ·
             <strong> 빈 날짜를 클릭</strong>하면 수업·보강을 추가할 수 있어요. ·
-            선택 후 <strong>삭제</strong> 버튼으로 회차를 뺄 수 있어요.
+            선택 후 <strong>삭제</strong> 버튼으로 회차를 뺄 수 있고, <strong>💬 사유</strong>를 적으면 캘린더 회차 아래에 표시돼요. ·
+            휴원일이 새로 등록되면 겹친 회차는 <strong>다음 수업일로 자동 이동</strong>됩니다.
           </div>
 
           {/* 선택 배너 */}
@@ -2337,16 +2428,29 @@ function InteractiveScheduleCalendar({ subject, holidays, absences, onUpdate }) 
                 <>
                   <span className="text-xs font-bold text-blue-900">
                     📌 {sel.cycle === 'plan' ? '계획' : '진행'} {sel.f.num}회차 · {fmtD(sel.dateStr)} 선택됨
-                    {sel.f.adjusted && <span className="ml-1 text-amber-700">(↪ {fmtD(sel.f.originalDate)}에서 이동된 회차)</span>}
+                    {sel.f.adjusted && !sel.f.holidayShifted && <span className="ml-1 text-amber-700">(↪ {fmtD(sel.f.originalDate)}에서 이동된 회차)</span>}
+                    {sel.f.holidayShifted && <span className="ml-1 text-red-600">(⚠️ 휴원일과 겹쳐 자동 이동됨)</span>}
                     {sel.f.isExtra && <span className="ml-1 text-teal-700">(➕ 추가된 수업)</span>}
                   </span>
                   <span className="text-[11px] text-blue-700">→ 옮길 날짜를 클릭하세요</span>
                   <span className="flex gap-1 ml-auto">
                     <button onClick={() => deleteSession(sel.f)} className="px-2 py-1 bg-rose-600 text-white text-[11px] rounded font-semibold">🗑️ 이 회차 삭제</button>
-                    {(sel.f.adjusted || sel.f.isExtra) && (
+                    {sel.f.srcIdx >= 0 && (
                       <button onClick={() => revertSession(sel.f)} className="px-2 py-1 bg-amber-500 text-white text-[11px] rounded font-semibold">↩️ 원래대로</button>
                     )}
                     <button onClick={() => setSel(null)} className="px-2 py-1 bg-gray-300 text-gray-700 text-[11px] rounded">취소</button>
+                  </span>
+                  <span className="flex items-center gap-1 w-full mt-1">
+                    <span className="text-[11px] text-gray-600 whitespace-nowrap">💬 사유:</span>
+                    <input
+                      type="text"
+                      value={noteDraft}
+                      onChange={(e) => setNoteDraft(e.target.value)}
+                      onKeyDown={(e) => e.key === 'Enter' && saveNote()}
+                      placeholder="예: 제헌절 휴원, 학교 행사 → 캘린더 회차 아래에 표시됩니다"
+                      className="flex-1 min-w-[120px] px-1.5 py-0.5 border border-blue-300 rounded text-xs"
+                    />
+                    <button onClick={saveNote} className="px-2 py-1 bg-blue-600 text-white text-[11px] rounded font-semibold whitespace-nowrap">사유 저장</button>
                   </span>
                 </>
               )}
@@ -2357,6 +2461,18 @@ function InteractiveScheduleCalendar({ subject, holidays, absences, onUpdate }) 
                   <span className="flex gap-1 ml-auto">
                     <button onClick={() => deleteMakeup(sel.idx)} className="px-2 py-1 bg-rose-600 text-white text-[11px] rounded font-semibold">🗑️ 보강 삭제</button>
                     <button onClick={() => setSel(null)} className="px-2 py-1 bg-gray-300 text-gray-700 text-[11px] rounded">취소</button>
+                  </span>
+                  <span className="flex items-center gap-1 w-full mt-1">
+                    <span className="text-[11px] text-gray-600 whitespace-nowrap">💬 사유:</span>
+                    <input
+                      type="text"
+                      value={noteDraft}
+                      onChange={(e) => setNoteDraft(e.target.value)}
+                      onKeyDown={(e) => e.key === 'Enter' && saveNote()}
+                      placeholder="예: 6회차 결석 보강 → 캘린더 보강 아래에 표시됩니다"
+                      className="flex-1 min-w-[120px] px-1.5 py-0.5 border border-cyan-300 rounded text-xs"
+                    />
+                    <button onClick={saveNote} className="px-2 py-1 bg-cyan-600 text-white text-[11px] rounded font-semibold whitespace-nowrap">사유 저장</button>
                   </span>
                 </>
               )}
@@ -2416,17 +2532,26 @@ function InteractiveScheduleCalendar({ subject, holidays, absences, onUpdate }) 
                         <div className="text-[10px] leading-none" style={{ color: holiday ? '#dc2626' : date.getDay() === 0 ? '#dc2626' : date.getDay() === 6 ? '#2563eb' : '#111827', fontWeight: holiday ? 700 : 500 }}>{date.getDate()}</div>
                         {holiday && isCurrentMonth && <div className="text-[8px] text-red-600 font-bold leading-tight">{holiday}</div>}
                         {isCurrentMonth && entry && entry.prev.map((f, i) => (
-                          <div key={`p${i}`} className="text-[9px] font-extrabold leading-tight rounded px-0.5 mt-px" style={{ background: '#fef3c7', color: absentSet.has(f.dateStr) || (f.originalDate && absentSet.has(f.originalDate)) ? '#dc2626' : '#b45309', textDecoration: absentSet.has(f.dateStr) || (f.originalDate && absentSet.has(f.originalDate)) ? 'line-through' : 'none' }}>
-                            {f.adjusted && '↪'}{f.isExtra && '➕'}{f.num}
-                          </div>
+                          <React.Fragment key={`p${i}`}>
+                            <div className="text-[9px] font-extrabold leading-tight rounded px-0.5 mt-px" style={{ background: '#fef3c7', color: absentSet.has(f.dateStr) || (f.originalDate && absentSet.has(f.originalDate)) ? '#dc2626' : '#b45309', textDecoration: absentSet.has(f.dateStr) || (f.originalDate && absentSet.has(f.originalDate)) ? 'line-through' : 'none' }}>
+                              {(f.adjusted || f.holidayShifted) && '↪'}{f.isExtra && '➕'}{f.num}
+                            </div>
+                            {f.note && <div className="text-[7px] text-gray-500 leading-tight" style={{ wordBreak: 'keep-all' }}>{f.note}</div>}
+                          </React.Fragment>
                         ))}
                         {isCurrentMonth && entry && entry.plan.map((f, i) => (
-                          <div key={`f${i}`} className="text-[9px] font-extrabold leading-tight rounded px-0.5 mt-px" style={{ background: '#ffe4e6', color: '#be123c' }}>
-                            {f.adjusted && '↪'}{f.isExtra && '➕'}{f.num}
-                          </div>
+                          <React.Fragment key={`f${i}`}>
+                            <div className="text-[9px] font-extrabold leading-tight rounded px-0.5 mt-px" style={{ background: '#ffe4e6', color: '#be123c' }}>
+                              {(f.adjusted || f.holidayShifted) && '↪'}{f.isExtra && '➕'}{f.num}
+                            </div>
+                            {f.note && <div className="text-[7px] text-gray-500 leading-tight" style={{ wordBreak: 'keep-all' }}>{f.note}</div>}
+                          </React.Fragment>
                         ))}
                         {isCurrentMonth && entry && entry.makeups.map((mk, i) => (
-                          <div key={`m${i}`} className="text-[9px] font-extrabold leading-tight rounded px-0.5 mt-px" style={{ background: '#cffafe', color: '#0891b2' }}>🔵보강</div>
+                          <React.Fragment key={`m${i}`}>
+                            <div className="text-[9px] font-extrabold leading-tight rounded px-0.5 mt-px" style={{ background: '#cffafe', color: '#0891b2' }}>🔵보강</div>
+                            {mk.m.note && <div className="text-[7px] leading-tight" style={{ color: '#0e7490', wordBreak: 'keep-all' }}>{mk.m.note}</div>}
+                          </React.Fragment>
                         ))}
                       </div>
                     );
@@ -3136,7 +3261,7 @@ const createCycleSnapshot = (student, holidays, currentYearMonth) => {
           // 일정 변경이 반영된 실제 마지막 수업일로 이력 저장
           const csStr = formatDateStr(sessions[0].date);
           const ceStr = formatDateStr(sessions[sessions.length - 1].date);
-          const { finals } = applyScheduleAdjustments(sessions, sub.adjustments, { cycleStartStr: csStr, cycleEndStr: ceStr, addFrom: sub.startDate, addTo: '' });
+          const { finals } = applyScheduleAdjustments(sessions, sub.adjustments, { cycleStartStr: csStr, cycleEndStr: ceStr, addFrom: sub.startDate, addTo: '', holidaySet, classDays: sub.classDays, skipHolidays: sub.skipHolidays });
           const lastStr = finals.length > 0 ? finals.map(f => f.dateStr).sort().pop() : ceStr;
           ed = parseDate(lastStr);
         }
@@ -3215,7 +3340,7 @@ const advanceOneStudent = (student, holidays, currentYearMonth) => {
       // 일정 변경(이동·추가·삭제)이 반영된 실제 마지막 수업일 기준으로 다음 주기 시작 계산
       const csStr = formatDateStr(sessions[0].date);
       const ceStr = formatDateStr(sessions[sessions.length - 1].date);
-      const { finals } = applyScheduleAdjustments(sessions, sub.adjustments, { cycleStartStr: csStr, cycleEndStr: ceStr, addFrom: sub.startDate, addTo: '' });
+      const { finals } = applyScheduleAdjustments(sessions, sub.adjustments, { cycleStartStr: csStr, cycleEndStr: ceStr, addFrom: sub.startDate, addTo: '', holidaySet, classDays: sub.classDays, skipHolidays: sub.skipHolidays });
       const lastStr = finals.length > 0 ? finals.map(f => f.dateStr).sort().pop() : ceStr;
       const endDate = parseDate(lastStr);
       const nextStart = getNextClassDay(endDate, sub.classDays, holidaySet);
