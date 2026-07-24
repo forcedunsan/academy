@@ -1050,36 +1050,57 @@ function InvoiceView({ student, settings, invoiceRef }) {
         <div className="border-t border-gray-200 mb-3"></div>
         <div className="space-y-2">
           {(student.subjects || []).map((sub) => {
-            // 실제 1회차 날짜: 요일 패턴 + 일정 변경(이동·추가·삭제·휴원일 자동 이동) 반영
+            // 실제 1회차 날짜 + 변경 내역(사유): 요일 패턴 + 일정 변경(이동·추가·삭제·휴원일 자동 이동) 반영
             const invHolidaySet = new Set((settings.holidays || []).map(h => h.date));
             let firstDate = parseDate(sub.startDate);
+            const changeLines = [];
+            const fmtD2 = (ds) => `${fmtKDate(parseDate(ds))} (${DAY_NAMES_KO[parseDate(ds).getDay()]})`;
             if (sub.startDate && sub.classDays && sub.classDays.length > 0) {
               const sessions = getClassSessions(parseDate(sub.startDate), sub.classDays, sub.totalSessions, invHolidaySet, sub.skipHolidays);
               if (sessions.length > 0) {
                 const cs = formatDateStr(sessions[0].date);
                 const ce = formatDateStr(sessions[sessions.length - 1].date);
-                const { finals } = applyScheduleAdjustments(sessions, sub.adjustments, { cycleStartStr: cs, cycleEndStr: ce, addFrom: sub.startDate, addTo: '', holidaySet: invHolidaySet, classDays: sub.classDays, skipHolidays: sub.skipHolidays });
+                const { finals, deleted } = applyScheduleAdjustments(sessions, sub.adjustments, { cycleStartStr: cs, cycleEndStr: ce, addFrom: sub.startDate, addTo: '', holidaySet: invHolidaySet, classDays: sub.classDays, skipHolidays: sub.skipHolidays });
                 if (finals.length > 0) firstDate = parseDate(finals.map(f => f.dateStr).sort()[0]);
+                finals.forEach(f => {
+                  if (f.adjusted || f.holidayShifted) changeLines.push({ d: f.dateStr, text: `↪ ${f.num}회차 → ${fmtD2(f.dateStr)}${f.holidayShifted ? ' · 휴원일 자동 이동' : ''}${f.note ? ' · ' + f.note : ''}` });
+                  else if (f.isExtra) changeLines.push({ d: f.dateStr, text: `➕ ${fmtD2(f.dateStr)} 수업 추가${f.note ? ' · ' + f.note : ''}` });
+                  else if (f.note) changeLines.push({ d: f.dateStr, text: `💬 ${f.num}회차 ${fmtD2(f.dateStr)} · ${f.note}` });
+                });
+                (deleted || []).forEach(dl => {
+                  if (dl.originalDate) changeLines.push({ d: dl.originalDate, text: `— ${fmtD2(dl.originalDate)} 수업 없음${dl.note ? ' · ' + dl.note : ''}` });
+                });
+                (sub.makeups || []).forEach(m => {
+                  if (m.date && m.date >= sub.startDate) changeLines.push({ d: m.date, text: `🔵 ${fmtD2(m.date)} 보강${m.note ? ' · ' + m.note : ''}` });
+                });
+                changeLines.sort((a, b) => a.d.localeCompare(b.d));
               }
             }
             return (
-              <div key={sub.id} className="flex items-center gap-3 py-1.5 px-2 rounded" style={{ background: '#f7f5f0' }}>
-                <span
-                  className={`${getChipClass(sub.name)} text-xs font-semibold rounded-full min-w-[48px]`}
-                  style={{
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    padding: '4px 12px',
-                    lineHeight: 1.4,
-                  }}
-                >
-                  {sub.name}
-                </span>
-                <span className="text-sm text-gray-700 flex-1">
-                  시작 <span className="font-bold">{fmtKDate(firstDate)}</span> 1회차
-                </span>
-                <span className="text-xs text-gray-500 font-medium">주 {(sub.classDays || []).length || sub.sessionsPerWeek}회</span>
+              <div key={sub.id} className="py-1.5 px-2 rounded" style={{ background: '#f7f5f0' }}>
+                <div className="flex items-center gap-3">
+                  <span
+                    className={`${getChipClass(sub.name)} text-xs font-semibold rounded-full min-w-[48px]`}
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      padding: '4px 12px',
+                      lineHeight: 1.4,
+                    }}
+                  >
+                    {sub.name}
+                  </span>
+                  <span className="text-sm text-gray-700 flex-1">
+                    시작 <span className="font-bold">{fmtKDate(firstDate)}</span> 1회차
+                  </span>
+                  <span className="text-xs text-gray-500 font-medium">주 {(sub.classDays || []).length || sub.sessionsPerWeek}회</span>
+                </div>
+                {changeLines.length > 0 && (
+                  <div className="mt-1.5 pt-1.5 text-[11px] text-gray-500 leading-relaxed" style={{ borderTop: '1px dashed #d9d4c8' }}>
+                    {changeLines.map((c, i) => <div key={i}>{c.text}</div>)}
+                  </div>
+                )}
               </div>
             );
           })}
