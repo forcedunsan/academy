@@ -3419,6 +3419,92 @@ const advanceOneStudent = (student, holidays, currentYearMonth) => {
   };
 };
 
+// 학생의 익월 등록 마감일 계산 (일정 변경·휴원일 이동 반영) — 수강료 안내 알림용
+const getRegistrationDeadline = (student, settings) => {
+  if (student.isWithdrawn || student.isSuspended) return null;
+  const holidaySet = new Set((settings.holidays || []).map(h => h.date));
+  if (student.isMonthly) {
+    if (!student.monthlyYearMonth) return null;
+    const [y, m] = student.monthlyYearMonth.split('-').map(Number);
+    if (!y || !m) return null;
+    return new Date(y, m, 0); // 대상 월의 말일
+  }
+  const nextStarts = [];
+  (student.subjects || []).forEach(sub => {
+    if (!sub.startDate || !sub.classDays || sub.classDays.length === 0) return;
+    const sessions = getClassSessions(parseDate(sub.startDate), sub.classDays, sub.totalSessions, holidaySet, sub.skipHolidays);
+    if (sessions.length === 0) return;
+    const csStr = formatDateStr(sessions[0].date);
+    const ceStr = formatDateStr(sessions[sessions.length - 1].date);
+    const { finals } = applyScheduleAdjustments(sessions, sub.adjustments, { cycleStartStr: csStr, cycleEndStr: ceStr, addFrom: sub.startDate, addTo: '', holidaySet, classDays: sub.classDays, skipHolidays: sub.skipHolidays });
+    const lastStr = finals.length > 0 ? finals.map(f => f.dateStr).sort().pop() : ceStr;
+    const nextStart = getNextClassDay(parseDate(lastStr), sub.classDays, holidaySet);
+    if (nextStart) nextStarts.push(nextStart);
+  });
+  if (nextStarts.length === 0) return null;
+  const earliest = new Date(Math.min(...nextStarts.map(d => d.getTime())));
+  return addDays(earliest, -1);
+};
+
+// ⏰ 수강료 안내 알림 배너 (등록 마감 5일 전부터 표시)
+function TuitionReminderBanner({ students, settings, onGoStudent }) {
+  const REMIND_DAYS = 5;
+  const todayStr = formatDateStr(new Date());
+  const [dismissed, setDismissed] = useState(() => storage.get('tuition_remind_dismiss') === todayStr);
+
+  const today = parseDate(todayStr);
+  const items = [];
+  (students || []).forEach(s => {
+    const dl = getRegistrationDeadline(s, settings);
+    if (!dl) return;
+    const diff = Math.round((dl.getTime() - today.getTime()) / 86400000);
+    if (diff <= REMIND_DAYS && diff >= -7) items.push({ s, deadline: dl, diff });
+  });
+  items.sort((a, b) => a.diff - b.diff);
+
+  if (items.length === 0 || dismissed) return null;
+
+  const dismissToday = () => {
+    storage.set('tuition_remind_dismiss', todayStr);
+    setDismissed(true);
+  };
+
+  const ddayLabel = (diff) => {
+    if (diff > 0) return { text: `D-${diff}`, cls: 'bg-amber-100 text-amber-800 border-amber-300' };
+    if (diff === 0) return { text: '오늘 마감!', cls: 'bg-rose-600 text-white border-rose-700' };
+    return { text: `${-diff}일 지남`, cls: 'bg-rose-100 text-rose-700 border-rose-300' };
+  };
+
+  return (
+    <div className="mb-4 border-2 border-amber-400 bg-amber-50 rounded-lg overflow-hidden">
+      <div className="flex items-center justify-between px-4 py-2 bg-amber-100">
+        <span className="text-sm font-bold text-amber-900">
+          ⏰ 수강료 안내 알림 — 등록 마감 {REMIND_DAYS}일 전 학생 <span className="text-rose-600">{items.length}명</span>
+        </span>
+        <button onClick={dismissToday} className="text-[11px] text-amber-700 hover:text-amber-900 underline">오늘 하루 그만 보기</button>
+      </div>
+      <div className="px-4 py-2 space-y-1">
+        {items.map(({ s, deadline, diff }) => {
+          const d = ddayLabel(diff);
+          return (
+            <div key={s.id} className="flex items-center gap-2 flex-wrap text-sm">
+              <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full border ${d.cls}`}>{d.text}</span>
+              <span className="font-bold text-gray-800">{s.name}</span>
+              <span className="text-xs text-gray-600">등록 마감일: <strong>{fmtKDate(deadline)}</strong></span>
+              <button onClick={() => onGoStudent(s.id)} className="ml-auto px-2.5 py-1 bg-amber-600 hover:bg-amber-700 text-white text-[11px] rounded font-semibold">
+                📋 안내문 보기
+              </button>
+            </div>
+          );
+        })}
+      </div>
+      <div className="px-4 py-1.5 bg-amber-100/60 text-[10px] text-amber-700">
+        💡 안내문을 보내고 <strong>"➡️ 다음 주기로 이동"</strong>을 누르면 그 학생의 알림이 사라집니다. 마감일 = 다음 주기 시작 전날 (일정 변경 반영).
+      </div>
+    </div>
+  );
+}
+
 // ═══════════════════════════════════════════════════
 //  6. 학생 목록
 // ═══════════════════════════════════════════════════
@@ -3605,7 +3691,7 @@ function ScheduleHistoryModal({ student, settings, onClose }) {
   );
 }
 
-function StudentListTab({ students, onAdd, onEdit, onDelete, onDuplicate, onSelect, selectedId, onBulkImport, onExportJSON, onImportJSON, onAdvanceAll, onAdvanceOne, onShowSchedule }) {
+function StudentListTab({ students, onAdd, onEdit, onDelete, onDuplicate, onSelect, selectedId, onBulkImport, onExportJSON, onImportJSON, onAdvanceAll, onAdvanceOne, onShowSchedule, onRestore }) {
   const [search, setSearch] = useState('');
   const [showMenu, setShowMenu] = useState(false);
   const [showWithdrawn, setShowWithdrawn] = useState(false); // 기본: 재원생만
@@ -3752,14 +3838,23 @@ function StudentListTab({ students, onAdd, onEdit, onDelete, onDuplicate, onSele
                       <button onClick={() => onEdit(s.id)} className="px-2 py-1 text-xs bg-gray-100 hover:bg-gray-200 rounded">편집</button>
                       <button onClick={() => onShowSchedule(s.id)} className="px-2 py-1 text-xs bg-indigo-100 hover:bg-indigo-200 text-indigo-700 rounded font-semibold" title="월별 수강 일정 조회">📆 일정</button>
                       <button onClick={() => onDuplicate(s.id)} className="px-2 py-1 text-xs bg-gray-100 hover:bg-gray-200 rounded">복제</button>
-                      <button
-                        onClick={() => onAdvanceOne(s.id)}
-                        disabled={s.isWithdrawn || s.isSuspended}
-                        className={`px-2 py-1 text-xs rounded ${(s.isWithdrawn || s.isSuspended) ? 'bg-gray-50 text-gray-300 cursor-not-allowed' : 'bg-emerald-100 hover:bg-emerald-200 text-emerald-700 font-semibold'}`}
-                        title={s.isWithdrawn ? '퇴원 학생은 주기 이동 불가' : s.isSuspended ? '휴원 학생은 주기 이동 불가' : '이 학생만 다음 주기(또는 다음 달)로 이동'}
-                      >
-                        ➡️ 다음
-                      </button>
+                      {(s.isWithdrawn || s.isSuspended) ? (
+                        <button
+                          onClick={() => onRestore(s.id)}
+                          className="px-2 py-1 text-xs rounded bg-emerald-100 hover:bg-emerald-200 text-emerald-700 font-semibold"
+                          title="퇴원·휴원 해제하고 재원생으로 복귀 (정보·이력·납부 기록 그대로 유지)"
+                        >
+                          🔄 복귀
+                        </button>
+                      ) : (
+                        <button
+                          onClick={() => onAdvanceOne(s.id)}
+                          className="px-2 py-1 text-xs rounded bg-emerald-100 hover:bg-emerald-200 text-emerald-700 font-semibold"
+                          title="이 학생만 다음 주기(또는 다음 달)로 이동"
+                        >
+                          ➡️ 다음
+                        </button>
+                      )}
                       <button onClick={() => { if (confirm(`${s.name} 학생을 삭제하시겠습니까?`)) onDelete(s.id); }} className="px-2 py-1 text-xs text-red-600 hover:bg-red-50 rounded">삭제</button>
                     </div>
                   </td>
@@ -5645,6 +5740,83 @@ function StatCard({ title, value, color = 'gray' }) {
   );
 }
 
+// 📜 학생 한 명의 전체 납부 이력 (월별)
+function PaymentHistoryModal({ student, onClose }) {
+  if (!student) return null;
+  // 납부 기록이 있는 달 + 주기 이력이 있는 달을 모두 모음
+  const monthSet = new Set(Object.keys(student.payments || {}));
+  (student.cycleHistory || []).forEach(h => { if (h.yearMonth) monthSet.add(h.yearMonth); });
+  const currentAmount = (student.subjects || []).reduce((a, x) => a + (x.tuition || 0), 0) + (student.materials || []).reduce((a, x) => a + (x.amount || 0), 0);
+  const nowYm = formatDateStr(new Date()).slice(0, 7);
+
+  const rows = [...monthSet].sort().reverse().map(ym => {
+    const p = (student.payments || {})[ym];
+    const hists = (student.cycleHistory || []).filter(h => h.yearMonth === ym);
+    const hist = hists.length > 0 ? hists[hists.length - 1] : null;
+    return {
+      ym,
+      period: hist ? hist.periodLabel : '',
+      amount: hist ? hist.totalAmount : (ym === nowYm ? currentAmount : null),
+      status: p ? p.status : (hist && hist.payment ? hist.payment.status : 'pending'),
+      paidDate: (p && p.paidDate) || (hist && hist.payment && hist.payment.paidDate) || '',
+      note: (p && p.note) || '',
+    };
+  });
+  const paidTotal = rows.filter(r => r.status === 'paid' && r.amount).reduce((a, r) => a + r.amount, 0);
+
+  return (
+    <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 overflow-y-auto" onClick={onClose}>
+      <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg my-8 max-h-[85vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+        <div className="invoice-navy text-white px-5 py-3 flex items-center justify-between sticky top-0 z-10">
+          <h2 className="text-base font-bold">
+            📜 {student.name} · 납부 이력
+            {(student.isWithdrawn || student.isSuspended) && (
+              <span className="ml-2 text-[10px] px-1.5 py-0.5 bg-white/20 rounded">{student.isWithdrawn ? '퇴원' : '휴원'}</span>
+            )}
+          </h2>
+          <button onClick={onClose} className="text-white/70 hover:text-white text-2xl leading-none">×</button>
+        </div>
+        {rows.length === 0 ? (
+          <div className="p-8 text-center text-gray-400 text-sm">납부 기록이 아직 없습니다.<br /><span className="text-[11px]">납부 현황에서 납부완료 처리하거나 주기를 이동하면 기록이 쌓여요.</span></div>
+        ) : (
+          <div className="p-4">
+            <table className="w-full text-sm">
+              <thead className="bg-gray-50 border-b">
+                <tr>
+                  <th className="px-2 py-1.5 text-left font-semibold text-gray-700">월</th>
+                  <th className="px-2 py-1.5 text-left font-semibold text-gray-700">청구 기간</th>
+                  <th className="px-2 py-1.5 text-right font-semibold text-gray-700">금액</th>
+                  <th className="px-2 py-1.5 text-center font-semibold text-gray-700">상태</th>
+                  <th className="px-2 py-1.5 text-center font-semibold text-gray-700">납부일</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map(r => (
+                  <tr key={r.ym} className={`border-b ${r.status === 'paid' ? 'bg-green-50/40' : ''}`}>
+                    <td className="px-2 py-1.5 font-bold text-gray-800 whitespace-nowrap">{r.ym.slice(0, 4)}.{r.ym.slice(5, 7)}</td>
+                    <td className="px-2 py-1.5 text-[11px] text-gray-500">{r.period || '—'}{r.note && <div className="text-gray-400">{r.note}</div>}</td>
+                    <td className="px-2 py-1.5 text-right text-gray-700 whitespace-nowrap">{r.amount != null ? fmtWon(r.amount) : '—'}</td>
+                    <td className="px-2 py-1.5 text-center">
+                      {r.status === 'paid'
+                        ? <span className="text-[11px] font-bold text-green-700 bg-green-100 px-2 py-0.5 rounded-full">✓ 완납</span>
+                        : <span className="text-[11px] font-bold text-rose-700 bg-rose-100 px-2 py-0.5 rounded-full">미납</span>}
+                    </td>
+                    <td className="px-2 py-1.5 text-center text-[11px] text-gray-500 whitespace-nowrap">{r.paidDate || '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <div className="mt-2 text-right text-xs text-gray-600">
+              완납 합계: <strong className="text-green-700">{fmtWon(paidTotal)}</strong>
+            </div>
+            <p className="text-[10px] text-gray-400 mt-1">청구 기간·금액은 "다음 주기로 이동" 시 저장된 이력 기준입니다. 이력이 없는 달은 금액이 — 로 표시될 수 있어요.</p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function PaymentTab({ students, setStudents, privacyMode }) {
   const pmask = (val, suffix = '') => privacyMode ? '•••' : `${val.toLocaleString()}${suffix}`;
   const [yearMonth, setYearMonth] = useState(() => {
@@ -5653,6 +5825,8 @@ function PaymentTab({ students, setStudents, privacyMode }) {
   });
   const [filter, setFilter] = useState('all');
   const [search, setSearch] = useState('');
+  const [includeInactive, setIncludeInactive] = useState(false); // 퇴원·휴원생 포함 (이력 조회용)
+  const [historyStudent, setHistoryStudent] = useState(null);
 
   const getPayment = (s) => (s.payments && s.payments[yearMonth]) || { status: 'pending', paidDate: '', note: '' };
   const getAmount = (s) => (s.subjects || []).reduce((a, x) => a + (x.tuition || 0), 0) + (s.materials || []).reduce((a, x) => a + (x.amount || 0), 0);
@@ -5695,10 +5869,12 @@ function PaymentTab({ students, setStudents, privacyMode }) {
     }));
   };
 
-  // 재원생만 대상 (퇴원·휴원생은 납부 대상 아님)
+  // 재원생만 대상 (퇴원·휴원생은 납부 대상 아님 — 통계 기준)
   const activeStudents = students.filter(s => !s.isWithdrawn && !s.isSuspended);
 
-  const filtered = sortStudentsByName(activeStudents.filter(s => {
+  // 목록은 옵션에 따라 퇴원·휴원생 포함 (과거 납부 이력 조회용)
+  const listBase = includeInactive ? students : activeStudents;
+  const filtered = sortStudentsByName(listBase.filter(s => {
     if (search && !s.name.includes(search)) return false;
     const p = getPayment(s);
     if (filter === 'paid') return p.status === 'paid';
@@ -5745,6 +5921,10 @@ function PaymentTab({ students, setStudents, privacyMode }) {
             ))}
           </div>
         </div>
+        <label className="flex items-center gap-1.5 text-xs text-gray-600 cursor-pointer pb-1.5">
+          <input type="checkbox" checked={includeInactive} onChange={(e) => setIncludeInactive(e.target.checked)} className="w-4 h-4" />
+          퇴원·휴원 포함
+        </label>
         <div className="flex-1"></div>
         <div className="flex gap-1">
           <button onClick={copyUnpaidList} className="px-3 py-1.5 bg-orange-500 text-white rounded text-xs font-semibold hover:bg-orange-600">📋 미납자 목록 복사</button>
@@ -5770,19 +5950,24 @@ function PaymentTab({ students, setStudents, privacyMode }) {
               <th className="px-3 py-2 text-center font-semibold text-gray-700">상태</th>
               <th className="px-3 py-2 text-center font-semibold text-gray-700">납부일</th>
               <th className="px-3 py-2 text-left font-semibold text-gray-700">메모</th>
+              <th className="px-3 py-2 text-center font-semibold text-gray-700">이력</th>
             </tr>
           </thead>
           <tbody>
             {filtered.length === 0 && (
-              <tr><td colSpan="5" className="px-3 py-8 text-center text-gray-400">해당 조건의 학생이 없습니다</td></tr>
+              <tr><td colSpan="6" className="px-3 py-8 text-center text-gray-400">해당 조건의 학생이 없습니다</td></tr>
             )}
             {filtered.map((s) => {
               const p = getPayment(s);
               const amount = getAmount(s);
               const isPaid = p.status === 'paid';
               return (
-                <tr key={s.id} className={`border-b ${isPaid ? 'bg-green-50/40' : ''}`}>
-                  <td className="px-3 py-2 font-semibold text-gray-800">{s.name}</td>
+                <tr key={s.id} className={`border-b ${isPaid ? 'bg-green-50/40' : ''} ${(s.isWithdrawn || s.isSuspended) ? 'opacity-70' : ''}`}>
+                  <td className="px-3 py-2 font-semibold text-gray-800">
+                    {s.name}
+                    {s.isWithdrawn && <span className="ml-1.5 text-[9px] px-1.5 py-0.5 bg-rose-100 text-rose-700 rounded font-semibold">퇴원</span>}
+                    {s.isSuspended && !s.isWithdrawn && <span className="ml-1.5 text-[9px] px-1.5 py-0.5 bg-amber-100 text-amber-700 rounded font-semibold">휴원</span>}
+                  </td>
                   <td className="px-3 py-2 text-right font-medium text-gray-700">{fmtWon(amount)}</td>
                   <td className="px-3 py-2 text-center">
                     <button onClick={() => togglePaid(s)} className={`px-3 py-1 rounded text-xs font-bold transition ${isPaid ? 'bg-green-600 text-white' : 'bg-red-100 text-red-700 border border-red-300 hover:bg-red-200'}`}>
@@ -5795,12 +5980,19 @@ function PaymentTab({ students, setStudents, privacyMode }) {
                   <td className="px-3 py-2">
                     <input type="text" value={p.note || ''} onChange={(e) => updatePayment(s.id, { note: e.target.value })} placeholder="메모 (선택)" className="w-full px-2 py-1 text-xs border rounded" />
                   </td>
+                  <td className="px-3 py-2 text-center">
+                    <button onClick={() => setHistoryStudent(s)} className="px-2 py-1 text-xs bg-indigo-100 hover:bg-indigo-200 text-indigo-700 rounded font-semibold" title="이 학생의 전체 납부 이력 보기">📜</button>
+                  </td>
                 </tr>
               );
             })}
           </tbody>
         </table>
       </div>
+
+      {historyStudent && (
+        <PaymentHistoryModal student={students.find(x => x.id === historyStudent.id) || historyStudent} onClose={() => setHistoryStudent(null)} />
+      )}
     </div>
   );
 }
@@ -5886,6 +6078,15 @@ function App() {
     copy.subjects = (copy.subjects || []).map(s => ({ ...s, id: uid() }));
     copy.materials = (copy.materials || []).map(m => ({ ...m, id: uid() }));
     setStudents([...students, copy]);
+  };
+  // 퇴원·휴원 학생 복귀 (정보·이력·납부 기록은 그대로 유지되어 있음)
+  const handleRestoreStudent = (id) => {
+    const t = students.find(s => s.id === id);
+    if (!t) return;
+    const label = t.isWithdrawn ? '퇴원' : '휴원';
+    if (!confirm(`${t.name} 학생을 ${label} 해제하고 재원생으로 복귀시킬까요?\n\n과목·일정 이력·납부 기록은 그대로 살아납니다.`)) return;
+    setStudents(students.map(s => s.id === id ? { ...s, isWithdrawn: false, withdrawnDate: '', isSuspended: false, suspendStart: '', suspendEnd: '' } : s));
+    alert(`✅ ${t.name} 학생이 복귀되었습니다.\n\n📌 학생 편집에서 각 과목의 "이번 청구 주기 첫 수업일"을 복귀 후 첫 수업 날짜로 바꿔주세요.`);
   };
   const handleSaveStudent = (data) => {
     if (students.find(s => s.id === data.id)) {
@@ -6073,6 +6274,12 @@ function App() {
             onDismiss={handleDismissBackupReminder}
           />
         )}
+        <TuitionReminderBanner
+          students={students}
+          settings={settings}
+          onGoStudent={(id) => { setSelectedId(id); setTab('invoices'); }}
+        />
+
         {tab === 'students' && (
           <StudentListTab
             students={students}
@@ -6088,6 +6295,7 @@ function App() {
             onAdvanceAll={handleAdvanceAll}
             onAdvanceOne={handleAdvanceOne}
             onShowSchedule={(id) => setScheduleStudentId(id)}
+            onRestore={handleRestoreStudent}
           />
         )}
         {scheduleStudentId && (
