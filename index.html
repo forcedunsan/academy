@@ -1006,26 +1006,40 @@ function InvoiceView({ student, settings, invoiceRef }) {
         </div>
         <div className="border-t border-gray-200 mb-3"></div>
         <div className="space-y-2">
-          {(student.subjects || []).map((sub) => (
-            <div key={sub.id} className="flex items-center gap-3 py-1.5 px-2 rounded" style={{ background: '#f7f5f0' }}>
-              <span
-                className={`${getChipClass(sub.name)} text-xs font-semibold rounded-full min-w-[48px]`}
-                style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  padding: '4px 12px',
-                  lineHeight: 1.4,
-                }}
-              >
-                {sub.name}
-              </span>
-              <span className="text-sm text-gray-700 flex-1">
-                시작 <span className="font-bold">{fmtKDate(parseDate(sub.startDate))}</span> 1회차
-              </span>
-              <span className="text-xs text-gray-500 font-medium">주 {sub.sessionsPerWeek}회</span>
-            </div>
-          ))}
+          {(student.subjects || []).map((sub) => {
+            // 실제 1회차 날짜: 요일 패턴 + 일정 변경(이동·추가·삭제·휴원일 자동 이동) 반영
+            const invHolidaySet = new Set((settings.holidays || []).map(h => h.date));
+            let firstDate = parseDate(sub.startDate);
+            if (sub.startDate && sub.classDays && sub.classDays.length > 0) {
+              const sessions = getClassSessions(parseDate(sub.startDate), sub.classDays, sub.totalSessions, invHolidaySet, sub.skipHolidays);
+              if (sessions.length > 0) {
+                const cs = formatDateStr(sessions[0].date);
+                const ce = formatDateStr(sessions[sessions.length - 1].date);
+                const { finals } = applyScheduleAdjustments(sessions, sub.adjustments, { cycleStartStr: cs, cycleEndStr: ce, addFrom: sub.startDate, addTo: '', holidaySet: invHolidaySet, classDays: sub.classDays, skipHolidays: sub.skipHolidays });
+                if (finals.length > 0) firstDate = parseDate(finals.map(f => f.dateStr).sort()[0]);
+              }
+            }
+            return (
+              <div key={sub.id} className="flex items-center gap-3 py-1.5 px-2 rounded" style={{ background: '#f7f5f0' }}>
+                <span
+                  className={`${getChipClass(sub.name)} text-xs font-semibold rounded-full min-w-[48px]`}
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    padding: '4px 12px',
+                    lineHeight: 1.4,
+                  }}
+                >
+                  {sub.name}
+                </span>
+                <span className="text-sm text-gray-700 flex-1">
+                  시작 <span className="font-bold">{fmtKDate(firstDate)}</span> 1회차
+                </span>
+                <span className="text-xs text-gray-500 font-medium">주 {(sub.classDays || []).length || sub.sessionsPerWeek}회</span>
+              </div>
+            );
+          })}
         </div>
       </div>
       )}
