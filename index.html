@@ -479,11 +479,54 @@ function buildSessionMap(student, settings, mode) {
         cycleEnd = sessions[sessions.length - 1].date;
       }
     } else {
-      // 진행 = 지난 주기 (신규 등록이면 비움, 아니면 역산 — 지난 주기 전용 요일·회차 사용)
+      // 진행 = 지난 주기 (신규 등록이면 비움)
       if (sub.isNew) {
         subjectData.push({ ...sub, index: subIdx, sessions: [], startDate: null, endDate: null, isNew: true });
         return;
       }
+
+      // 1) "다음 주기로 이동" 때 저장된 실제 일정 기록이 있으면 그걸 그대로 표시
+      //    (📆 월별 일정의 ✏️ 수정 모드에서 고친 내용도 즉시 반영됨)
+      const hists = student.cycleHistory || [];
+      let histSubj = null;
+      for (let i = hists.length - 1; i >= 0; i--) {
+        const hs = (hists[i].subjects || []).find(x => x.name === sub.name && (x.schedule || []).length > 0);
+        if (hs) { histSubj = hs; break; }
+      }
+      if (histSubj) {
+        const histAbsent = new Set([
+          ...(histSubj.absences || []).map(a => a.date),
+          ...((student.absences || []).filter(a => a.subjectId === sub.id).map(a => a.date)),
+        ]);
+        histSubj.schedule.forEach(s => {
+          if (!s.date) return;
+          if (!sessionMap.has(s.date)) sessionMap.set(s.date, []);
+          sessionMap.get(s.date).push({
+            subjectIndex: subIdx, subjectName: sub.name, sessionNum: s.num,
+            absent: histAbsent.has(s.date), adjusted: !!s.adjusted, originalDate: null,
+            isExtra: !!s.isExtra, note: s.note || '',
+          });
+        });
+        (histSubj.makeups || []).forEach(m => {
+          if (!m.date) return;
+          if (!sessionMap.has(m.date)) sessionMap.set(m.date, []);
+          sessionMap.get(m.date).push({ subjectIndex: subIdx, subjectName: sub.name, sessionNum: 0, absent: false, isMakeup: true, makeupNote: m.note || '' });
+        });
+        const ds = histSubj.schedule.map(s => s.date).filter(Boolean).sort();
+        subjectData.push({
+          ...sub, index: subIdx,
+          classDays: prevDays,
+          totalSessions: histSubj.schedule.length,
+          sessions: histSubj.schedule.map(s => ({ date: parseDate(s.date), sessionNum: s.num })),
+          startDate: parseDate(ds[0]),
+          endDate: parseDate(ds[ds.length - 1]),
+          absentCount: histSubj.schedule.filter(s => histAbsent.has(s.date)).length,
+          makeupCount: (histSubj.makeups || []).length,
+        });
+        return;
+      }
+
+      // 2) 기록이 없으면 요일 패턴으로 역산 (지난 주기 전용 요일·회차 사용)
       sessions = getPreviousCycleSessions(newCycleStart, prevDays, prevTotal, holidaySet, sub.skipHolidays);
       if (sessions.length > 0) {
         cycleStart = sessions[0].date;
@@ -1200,7 +1243,7 @@ function InvoiceView({ student, settings, invoiceRef }) {
 //  4. 회차 일정 미리보기 / 휴일 관리 컴포넌트
 // ═══════════════════════════════════════════════════
 
-function SchedulePreview({ subject, holidays }) {
+function SchedulePreview({ subject, holidays, cycleHistory }) {
   const [expanded, setExpanded] = useState(false);
   if (!subject.startDate || !subject.classDays || subject.classDays.length === 0 || !subject.totalSessions) {
     return null;
@@ -1226,17 +1269,27 @@ function SchedulePreview({ subject, holidays }) {
   // 다음 주기 (등록 마감일 계산용) — 변경 반영된 실제 마지막 수업일 기준
   const nextNextStart = planEnd ? getNextClassDay(planEnd, subject.classDays, holidaySet) : null;
 
-  // 진행 주기 (지난 주기): 신규 등록이 아니면 역산 + 일정 변경 반영 (지난 주기 전용 요일·회차 사용)
+  // 진행 주기 (지난 주기): 저장된 실제 기록이 있으면 기록 기준, 없으면 역산 + 일정 변경 반영
   const prevDays = (subject.prevClassDays && subject.prevClassDays.length > 0) ? subject.prevClassDays : subject.classDays;
   const prevTotal = subject.prevTotalSessions || subject.totalSessions;
-  const currentSessions = subject.isNew
-    ? []
-    : getPreviousCycleSessions(newStart, prevDays, prevTotal, holidaySet, subject.skipHolidays);
+  let histSubj = null;
+  {
+    const hists = cycleHistory || [];
+    for (let i = hists.length - 1; i >= 0; i--) {
+      const hs = (hists[i].subjects || []).find(x => x.name === subject.name && (x.schedule || []).length > 0);
+      if (hs) { histSubj = hs; break; }
+    }
+  }
   let currentFinals = [];
-  if (currentSessions.length > 0) {
-    const cs = formatDateStr(currentSessions[0].date);
-    const ce = formatDateStr(currentSessions[currentSessions.length - 1].date);
-    currentFinals = applyScheduleAdjustments(currentSessions, subject.adjustments, { cycleStartStr: cs, cycleEndStr: ce, addFrom: cs, addTo: formatDateStr(addDays(newStart, -1)), ...holOpts, classDays: prevDays }).finals;
+  if (histSubj) {
+    currentFinals = histSubj.schedule.filter(s => s.date).map(s => ({ dateStr: s.date, num: s.num, adjusted: !!s.adjusted, isExtra: !!s.isExtra, note: s.note || '' }));
+  } else if (!subject.isNew) {
+    const currentSessions = getPreviousCycleSessions(newStart, prevDays, prevTotal, holidaySet, subject.skipHolidays);
+    if (currentSessions.length > 0) {
+      const cs = formatDateStr(currentSessions[0].date);
+      const ce = formatDateStr(currentSessions[currentSessions.length - 1].date);
+      currentFinals = applyScheduleAdjustments(currentSessions, subject.adjustments, { cycleStartStr: cs, cycleEndStr: ce, addFrom: cs, addTo: formatDateStr(addDays(newStart, -1)), ...holOpts, classDays: prevDays }).finals;
+    }
   }
   const currentDateStrs = currentFinals.map(f => f.dateStr).sort();
   const currentStart = currentDateStrs.length > 0 ? parseDate(currentDateStrs[0]) : null;
@@ -1258,6 +1311,9 @@ function SchedulePreview({ subject, holidays }) {
       <div className="mb-2 p-2 bg-amber-50 border border-amber-200 rounded">
         <div className="flex items-center gap-2 mb-0.5">
           <span className="font-bold text-amber-700">📅 진행 캘린더 (지난 주기)</span>
+          {histSubj && (
+            <span className="text-[10px] text-amber-600 bg-amber-100 px-1.5 py-0.5 rounded">📜 저장된 기록 기준 · 수정은 [학생 관리→📆 일정]</span>
+          )}
           {subject.isNew && (
             <span className="text-amber-600 bg-amber-100 px-1.5 py-0.5 rounded text-[10px]">
               🆕 신규 등록 → 진행 캘린더 생성 안 됨
@@ -2215,7 +2271,7 @@ function MakeupManager({ subject, onUpdate }) {
 //  캘린더 직접 수정 (날짜 클릭으로 이동·추가·삭제·보강)
 // ═══════════════════════════════════════════════════
 
-function InteractiveScheduleCalendar({ subject, holidays, absences, onUpdate }) {
+function InteractiveScheduleCalendar({ subject, holidays, absences, onUpdate, cycleHistory }) {
   const hasChanges = (subject.adjustments || []).length + (subject.makeups || []).length > 0;
   const [open, setOpen] = useState(hasChanges);
   const [sel, setSel] = useState(null); // {kind:'session'|'makeup'|'empty', ...}
@@ -2246,7 +2302,15 @@ function InteractiveScheduleCalendar({ subject, holidays, absences, onUpdate }) 
     planFinals = res.finals;
     deletedRecs = deletedRecs.concat(res.deleted);
   }
-  if (!subject.isNew) {
+  // 지난 주기: 저장된 기록이 있으면 여기서는 표시·수정하지 않음 (📆 일정의 수정 모드 담당)
+  let histPrev = false;
+  {
+    const hists = cycleHistory || [];
+    for (let i = hists.length - 1; i >= 0; i--) {
+      if ((hists[i].subjects || []).some(x => x.name === subject.name && (x.schedule || []).length > 0)) { histPrev = true; break; }
+    }
+  }
+  if (!subject.isNew && !histPrev) {
     const edPrevDays = (subject.prevClassDays && subject.prevClassDays.length > 0) ? subject.prevClassDays : subject.classDays;
     const edPrevTotal = subject.prevTotalSessions || subject.totalSessions;
     const prevAuto = getPreviousCycleSessions(newCycleStart, edPrevDays, edPrevTotal, holidaySet, subject.skipHolidays);
@@ -2446,6 +2510,13 @@ function InteractiveScheduleCalendar({ subject, holidays, absences, onUpdate }) 
             선택 후 <strong>삭제</strong> 버튼으로 회차를 뺄 수 있고, <strong>💬 사유</strong>를 적으면 캘린더 회차 아래에 표시돼요. ·
             휴원일이 새로 등록되면 겹친 회차는 <strong>다음 수업일로 자동 이동</strong>됩니다.
           </div>
+
+          {histPrev && (
+            <div className="mb-2 p-2 bg-amber-50 border border-amber-200 rounded text-[11px] text-amber-800">
+              📜 이 과목의 <strong>지난 주기 일정은 기록으로 저장</strong>되어 있어요. 여기서는 <strong>이번 계획만</strong> 수정하고,
+              지난 일정은 <strong>학생 관리 → [📆 일정] → [✏️ 지난 일정 수정]</strong>에서 고쳐주세요.
+            </div>
+          )}
 
           {/* 선택 배너 */}
           {sel && (
@@ -3083,7 +3154,7 @@ function StudentForm({ student, onSave, onCancel, defaultSettings }) {
                     </p>
                   </div>
 
-                  <SchedulePreview subject={sub} holidays={defaultSettings?.holidays} />
+                  <SchedulePreview subject={sub} holidays={defaultSettings?.holidays} cycleHistory={data.cycleHistory} />
                   <AbsenceManager
                     subjectId={sub.id}
                     subjectName={sub.name}
@@ -3111,6 +3182,7 @@ function StudentForm({ student, onSave, onCancel, defaultSettings }) {
                     holidays={defaultSettings?.holidays}
                     absences={(data.absences || []).filter(a => a.subjectId === sub.id)}
                     onUpdate={(patch) => updateSubject(sub.id, patch)}
+                    cycleHistory={data.cycleHistory}
                   />
                 </div>
               ))}
