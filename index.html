@@ -507,7 +507,14 @@ function buildSessionMap(student, settings, mode) {
             isExtra: !!s.isExtra, note: s.note || '',
           });
         });
-        (histSubj.makeups || []).forEach(m => {
+        // 보강: 기록 속 보강 + 지금 새로 입력한 보강(다음 주기 시작 전 날짜) 합쳐서 표시
+        const histMakeups = [...(histSubj.makeups || [])];
+        const planStartStr = formatDateStr(newCycleStart);
+        (sub.makeups || []).forEach(m => {
+          if (!m.date) return;
+          if (m.date < planStartStr && !histMakeups.some(x => x.date === m.date)) histMakeups.push(m);
+        });
+        histMakeups.forEach(m => {
           if (!m.date) return;
           if (!sessionMap.has(m.date)) sessionMap.set(m.date, []);
           sessionMap.get(m.date).push({ subjectIndex: subIdx, subjectName: sub.name, sessionNum: 0, absent: false, isMakeup: true, makeupNote: m.note || '' });
@@ -521,7 +528,7 @@ function buildSessionMap(student, settings, mode) {
           startDate: parseDate(ds[0]),
           endDate: parseDate(ds[ds.length - 1]),
           absentCount: histSubj.schedule.filter(s => histAbsent.has(s.date)).length,
-          makeupCount: (histSubj.makeups || []).length,
+          makeupCount: histMakeups.length,
         });
         return;
       }
@@ -1071,7 +1078,7 @@ function InvoiceView({ student, settings, invoiceRef }) {
                   if (dl.originalDate) changeLines.push({ d: dl.originalDate, text: `— ${fmtD2(dl.originalDate)} 수업 없음${dl.note ? ' · ' + dl.note : ''}` });
                 });
                 (sub.makeups || []).forEach(m => {
-                  if (m.date && m.date >= sub.startDate) changeLines.push({ d: m.date, text: `🔵 ${fmtD2(m.date)} 보강${m.note ? ' · ' + m.note : ''}` });
+                  if (m.date) changeLines.push({ d: m.date, text: `🔵 ${fmtD2(m.date)} 보강${m.note ? ' · ' + m.note : ''}` });
                 });
                 changeLines.sort((a, b) => a.d.localeCompare(b.d));
               }
@@ -3661,7 +3668,8 @@ function ScheduleHistoryModal({ student, settings, onClose, onUpdateStudent }) {
       const { sessionMap } = buildSessionMap(student, settings, mode);
       sessionMap.forEach((items, date) => items.forEach(it => {
         // 지난 주기(진행)는 요일 패턴으로 역산한 추정치 — 정확한 기록이 있는 과목은 기록만 표시
-        if (mode === 'current' && historySubjects.has(it.subjectName)) return;
+        // (단, 보강은 새로 입력된 것일 수 있으니 표시 — 중복은 키로 자동 제거)
+        if (mode === 'current' && historySubjects.has(it.subjectName) && !it.isMakeup) return;
         addEntry({
           date, subjectName: it.subjectName, num: it.sessionNum,
           adjusted: !!it.adjusted, isExtra: !!it.isExtra,
