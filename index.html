@@ -465,6 +465,12 @@ function buildSessionMap(student, settings, mode) {
     let sessions = [];
     let cycleStart = null, cycleEnd = null;
 
+    // 지난 주기 전용 요일·회차 (설정 안 했으면 이번 주기와 동일)
+    const prevDays = (sub.prevClassDays && sub.prevClassDays.length > 0) ? sub.prevClassDays : sub.classDays;
+    const prevTotal = sub.prevTotalSessions || sub.totalSessions;
+    const usedDays = mode === 'plan' ? sub.classDays : prevDays;
+    const usedTotal = mode === 'plan' ? sub.totalSessions : prevTotal;
+
     if (mode === 'plan') {
       // 계획 = 이번 청구 주기 (입력된 시작일부터 정방향)
       sessions = getClassSessions(newCycleStart, sub.classDays, sub.totalSessions, holidaySet, sub.skipHolidays);
@@ -473,12 +479,12 @@ function buildSessionMap(student, settings, mode) {
         cycleEnd = sessions[sessions.length - 1].date;
       }
     } else {
-      // 진행 = 지난 주기 (신규 등록이면 비움, 아니면 역산)
+      // 진행 = 지난 주기 (신규 등록이면 비움, 아니면 역산 — 지난 주기 전용 요일·회차 사용)
       if (sub.isNew) {
         subjectData.push({ ...sub, index: subIdx, sessions: [], startDate: null, endDate: null, isNew: true });
         return;
       }
-      sessions = getPreviousCycleSessions(newCycleStart, sub.classDays, sub.totalSessions, holidaySet, sub.skipHolidays);
+      sessions = getPreviousCycleSessions(newCycleStart, prevDays, prevTotal, holidaySet, sub.skipHolidays);
       if (sessions.length > 0) {
         cycleStart = sessions[0].date;
         cycleEnd = sessions[sessions.length - 1].date;
@@ -503,7 +509,7 @@ function buildSessionMap(student, settings, mode) {
     // 추가 수업 표시 범위: 계획=주기 시작일 이후 전부, 진행=지난 주기 시작 ~ 계획 시작 전날
     const addFrom = mode === 'plan' ? newCycleStartStr : cycleStartStr;
     const addTo = mode === 'plan' ? '' : formatDateStr(addDays(newCycleStart, -1));
-    const { finals } = applyScheduleAdjustments(sessions, sub.adjustments, { cycleStartStr, cycleEndStr, addFrom, addTo, holidaySet, classDays: sub.classDays, skipHolidays: sub.skipHolidays });
+    const { finals } = applyScheduleAdjustments(sessions, sub.adjustments, { cycleStartStr, cycleEndStr, addFrom, addTo, holidaySet, classDays: usedDays, skipHolidays: sub.skipHolidays });
 
     finals.forEach(f => {
       if (!sessionMap.has(f.dateStr)) sessionMap.set(f.dateStr, []);
@@ -568,6 +574,8 @@ function buildSessionMap(student, settings, mode) {
     subjectData.push({
       ...sub,
       index: subIdx,
+      classDays: usedDays, // 진행 캘린더는 지난 주기 요일 기준으로 표시
+      totalSessions: usedTotal,
       sessions: finals.map(f => ({ date: parseDate(f.dateStr), sessionNum: f.num })),
       startDate: parseDate(finalStartStr),
       endDate: parseDate(finalEndStr),
@@ -1204,15 +1212,17 @@ function SchedulePreview({ subject, holidays }) {
   // 다음 주기 (등록 마감일 계산용) — 변경 반영된 실제 마지막 수업일 기준
   const nextNextStart = planEnd ? getNextClassDay(planEnd, subject.classDays, holidaySet) : null;
 
-  // 진행 주기 (지난 주기): 신규 등록이 아니면 역산 + 일정 변경 반영
+  // 진행 주기 (지난 주기): 신규 등록이 아니면 역산 + 일정 변경 반영 (지난 주기 전용 요일·회차 사용)
+  const prevDays = (subject.prevClassDays && subject.prevClassDays.length > 0) ? subject.prevClassDays : subject.classDays;
+  const prevTotal = subject.prevTotalSessions || subject.totalSessions;
   const currentSessions = subject.isNew
     ? []
-    : getPreviousCycleSessions(newStart, subject.classDays, subject.totalSessions, holidaySet, subject.skipHolidays);
+    : getPreviousCycleSessions(newStart, prevDays, prevTotal, holidaySet, subject.skipHolidays);
   let currentFinals = [];
   if (currentSessions.length > 0) {
     const cs = formatDateStr(currentSessions[0].date);
     const ce = formatDateStr(currentSessions[currentSessions.length - 1].date);
-    currentFinals = applyScheduleAdjustments(currentSessions, subject.adjustments, { cycleStartStr: cs, cycleEndStr: ce, addFrom: cs, addTo: formatDateStr(addDays(newStart, -1)), ...holOpts }).finals;
+    currentFinals = applyScheduleAdjustments(currentSessions, subject.adjustments, { cycleStartStr: cs, cycleEndStr: ce, addFrom: cs, addTo: formatDateStr(addDays(newStart, -1)), ...holOpts, classDays: prevDays }).finals;
   }
   const currentDateStrs = currentFinals.map(f => f.dateStr).sort();
   const currentStart = currentDateStrs.length > 0 ? parseDate(currentDateStrs[0]) : null;
@@ -2223,11 +2233,13 @@ function InteractiveScheduleCalendar({ subject, holidays, absences, onUpdate }) 
     deletedRecs = deletedRecs.concat(res.deleted);
   }
   if (!subject.isNew) {
-    const prevAuto = getPreviousCycleSessions(newCycleStart, subject.classDays, subject.totalSessions, holidaySet, subject.skipHolidays);
+    const edPrevDays = (subject.prevClassDays && subject.prevClassDays.length > 0) ? subject.prevClassDays : subject.classDays;
+    const edPrevTotal = subject.prevTotalSessions || subject.totalSessions;
+    const prevAuto = getPreviousCycleSessions(newCycleStart, edPrevDays, edPrevTotal, holidaySet, subject.skipHolidays);
     if (prevAuto.length > 0) {
       const cs = formatDateStr(prevAuto[0].date);
       const ce = formatDateStr(prevAuto[prevAuto.length - 1].date);
-      const res = applyScheduleAdjustments(prevAuto, adjustments, { cycleStartStr: cs, cycleEndStr: ce, addFrom: cs, addTo: formatDateStr(addDays(newCycleStart, -1)), ...holOpts });
+      const res = applyScheduleAdjustments(prevAuto, adjustments, { cycleStartStr: cs, cycleEndStr: ce, addFrom: cs, addTo: formatDateStr(addDays(newCycleStart, -1)), ...holOpts, classDays: edPrevDays });
       prevFinals = res.finals;
       deletedRecs = deletedRecs.concat(res.deleted);
     }
@@ -2980,7 +2992,7 @@ function StudentForm({ student, onSave, onCancel, defaultSettings }) {
                     </div>
                   </div>
                   <div>
-                    <label className="block text-[11px] text-gray-600 mb-1">수업 요일 (주 {sub.classDays.length}회)</label>
+                    <label className="block text-[11px] text-gray-600 mb-1">수업 요일 (주 {sub.classDays.length}회){sub.prevClassDays && sub.prevClassDays.length > 0 ? ' — 이번 계획에만 적용' : ''}</label>
                     <div className="flex gap-1 flex-wrap">
                       {DAY_NAMES_KO.map((day, i) => (
                         <button key={i} onClick={() => toggleSubjectDay(sub.id, i)} className={`px-3 py-1 rounded text-xs font-medium ${sub.classDays.includes(i) ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-600'}`}>
@@ -2989,6 +3001,56 @@ function StudentForm({ student, onSave, onCancel, defaultSettings }) {
                       ))}
                     </div>
                   </div>
+
+                  {/* 지난 주기 전용 요일·회차 (요일이 주기 중간에 바뀐 경우) */}
+                  {!sub.isNew && (
+                    <div className="mt-2 p-2 bg-amber-50 border border-amber-200 rounded">
+                      <label className="flex items-center gap-2 cursor-pointer flex-wrap">
+                        <input
+                          type="checkbox"
+                          checked={!!(sub.prevClassDays && sub.prevClassDays.length > 0)}
+                          onChange={(e) => updateSubject(sub.id, e.target.checked
+                            ? { prevClassDays: [...sub.classDays], prevTotalSessions: sub.totalSessions }
+                            : { prevClassDays: null, prevTotalSessions: null })}
+                          className="w-4 h-4 accent-amber-600"
+                        />
+                        <span className="text-sm font-semibold text-amber-800">🔁 지난 주기는 요일·회차가 달랐어요</span>
+                        <span className="text-[11px] text-amber-600 ml-auto">예: 지난달 월·수 → 이번달 월·금</span>
+                      </label>
+                      {sub.prevClassDays && sub.prevClassDays.length > 0 && (
+                        <div className="mt-2">
+                          <div className="flex items-center gap-1 flex-wrap">
+                            <span className="text-[11px] text-gray-600 mr-1">지난 주기 요일:</span>
+                            {DAY_NAMES_KO.map((day, i) => (
+                              <button
+                                key={i}
+                                onClick={() => {
+                                  const has = sub.prevClassDays.includes(i);
+                                  const nd = has ? sub.prevClassDays.filter(d => d !== i) : [...sub.prevClassDays, i].sort();
+                                  updateSubject(sub.id, { prevClassDays: nd });
+                                }}
+                                className={`px-2.5 py-1 rounded text-xs font-medium ${sub.prevClassDays.includes(i) ? 'bg-amber-600 text-white' : 'bg-gray-200 text-gray-600'}`}
+                              >
+                                {day}
+                              </button>
+                            ))}
+                            <span className="text-[11px] text-gray-600 ml-2">총 회차:</span>
+                            <input
+                              type="number"
+                              min="1"
+                              value={sub.prevTotalSessions || sub.totalSessions}
+                              onChange={(e) => updateSubject(sub.id, { prevTotalSessions: parseInt(e.target.value) || sub.totalSessions })}
+                              className="w-16 px-2 py-1 border rounded text-sm"
+                            />
+                          </div>
+                          <p className="text-[10px] text-amber-700/80 mt-1">
+                            진행 캘린더(지난 주기)는 여기 설정한 요일·회차로 계산되고, 위의 <strong>수업 요일은 이번 계획 캘린더에만</strong> 적용됩니다.
+                            "다음 주기로 이동" 시에는 자동으로 기록되니 보통은 만질 필요 없어요.
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  )}
 
                   {/* 신규 등록 체크박스 */}
                   <div className="mt-2 p-2 bg-blue-50 border border-blue-200 rounded">
@@ -3346,7 +3408,8 @@ const advanceOneStudent = (student, holidays, currentYearMonth) => {
       const nextStart = getNextClassDay(endDate, sub.classDays, holidaySet);
       if (!nextStart) return sub;
       // 새 주기로 넘어가면 보강·일정변경 초기화 (지난 주기 것이므로)
-      return { ...sub, startDate: formatDateStr(nextStart), adjustments: [], makeups: [], skipHolidays: [] };
+      // 지금 요일·회차를 '지난 주기' 값으로 기록 → 새 주기에서 요일을 바꿔도 지난 진행 캘린더가 안 변함
+      return { ...sub, startDate: formatDateStr(nextStart), adjustments: [], makeups: [], skipHolidays: [], prevClassDays: [...(sub.classDays || [])], prevTotalSessions: sub.totalSessions };
     }),
   };
 };
