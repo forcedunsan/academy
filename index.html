@@ -886,16 +886,23 @@ function CalendarView({ student, settings, mode, calendarRef }) {
                 {fmtKDate(s.startDate)} ~ {fmtKDate(s.endDate)}
               </span>
             </div>
-            <div style={{ fontWeight: 600, color: '#1a2344' }}>
-              총 {s.sessions.length}회차
-              {mode === 'current' && s.absentCount > 0 && (
-                <span style={{ color: '#dc2626', marginLeft: '6px' }}>(결석 {s.absentCount}회)</span>
-              )}
-              {s.makeupCount > 0 && (
-                <span style={{ color: '#0891b2', marginLeft: '6px' }}>(보강 {s.makeupCount}회)</span>
-              )}
-              · 주 {s.classDays.length}회
-            </div>
+            {(() => {
+              // 직접 쓴 요약 문구가 있으면 그대로 표시 (학생 편집 > 캘린더 요약 문구)
+              const ov = ((mode === 'current' ? s.summaryTextCurrent : s.summaryTextPlan) || '').trim();
+              if (ov) return <div style={{ fontWeight: 600, color: '#1a2344' }}>{ov}</div>;
+              return (
+                <div style={{ fontWeight: 600, color: '#1a2344' }}>
+                  총 {s.sessions.length}회차
+                  {mode === 'current' && s.absentCount > 0 && (
+                    <span style={{ color: '#dc2626', marginLeft: '6px' }}>(결석 {s.absentCount}회)</span>
+                  )}
+                  {s.makeupCount > 0 && (
+                    <span style={{ color: '#0891b2', marginLeft: '6px' }}>(보강 {s.makeupCount}회)</span>
+                  )}
+                  · 주 {s.classDays.length}회
+                </div>
+              );
+            })()}
           </div>
         ))}
       </div>
@@ -3183,6 +3190,36 @@ function StudentForm({ student, onSave, onCancel, defaultSettings }) {
                   </div>
 
                   <SchedulePreview subject={sub} holidays={defaultSettings?.holidays} cycleHistory={data.cycleHistory} />
+
+                  {/* 캘린더 과목별 요약 문구 직접 쓰기 (선택) */}
+                  <div className="mt-2 p-2 bg-gray-50 border border-gray-200 rounded">
+                    <div className="text-[11px] font-semibold text-gray-700 mb-1">
+                      📝 캘린더 요약 문구 직접 쓰기
+                      <span className="font-normal text-gray-400 ml-1">(선택 — 비우면 자동: "총 8회차 (결석 1회) (보강 1회) · 주 2회")</span>
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                      <div>
+                        <label className="block text-[10px] text-amber-700 mb-0.5">진행 캘린더 요약</label>
+                        <input
+                          type="text"
+                          value={sub.summaryTextCurrent || ''}
+                          onChange={(e) => updateSubject(sub.id, { summaryTextCurrent: e.target.value })}
+                          placeholder="예: 총 8회차 · 주 2회 (보강 포함)"
+                          className="w-full px-2 py-1 border rounded text-xs"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] text-rose-700 mb-0.5">계획 캘린더 요약</label>
+                        <input
+                          type="text"
+                          value={sub.summaryTextPlan || ''}
+                          onChange={(e) => updateSubject(sub.id, { summaryTextPlan: e.target.value })}
+                          placeholder="예: 총 8회차 · 주 2회"
+                          className="w-full px-2 py-1 border rounded text-xs"
+                        />
+                      </div>
+                    </div>
+                  </div>
                   <AbsenceManager
                     subjectId={sub.id}
                     subjectName={sub.name}
