@@ -3646,6 +3646,30 @@ const getRegistrationDeadline = (student, settings) => {
   return addDays(earliest, -1);
 };
 
+// 📩 학부모께 보낼 수강료 안내 문자 만들기 (카톡·문자에 붙여넣기용)
+const buildPaymentMessage = (student, settings, deadline, amount) => {
+  const lines = [
+    `[${settings.academyName}] ${student.name} 학생 등록 안내`,
+    '',
+    `안녕하세요, ${settings.academyName}입니다 😊`,
+    `${student.name} 학생의 등록 기간이 되어 안내드립니다.`,
+    '',
+  ];
+  if (deadline) lines.push(`· 등록 마감일: ${fmtKDate(deadline)}`);
+  if (amount) lines.push(`· 수강료: ${fmtWon(amount)}`);
+  if (settings.tuitionBankAccount) lines.push(`· 계좌: ${settings.tuitionBankName} ${settings.tuitionBankAccount} (예금주 ${settings.tuitionBankHolder})`);
+  lines.push('', '항상 믿고 맡겨주셔서 감사합니다 🙏');
+  return lines.join('\n');
+};
+
+const copyText = (text, okMsg) => {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(() => alert(okMsg || '📋 안내 문자가 복사됐어요!\n카톡 대화창에 붙여넣기(Ctrl+V) 하세요.')).catch(() => alert(text));
+  } else {
+    alert(text);
+  }
+};
+
 // 알림 계산 (마감 임박 + 마감 지난 미납) — 배너·알림 게시판 공용
 const computeTuitionAlerts = (students, settings) => {
   const REMIND_DAYS = 5;
@@ -3664,7 +3688,7 @@ const computeTuitionAlerts = (students, settings) => {
     if (diff < 0 && diff >= -60 && !isPaid) {
       overdueUnpaid.push({ s, deadline: dl, diff, amount });
     } else if (diff <= REMIND_DAYS && diff >= -7) {
-      items.push({ s, deadline: dl, diff });
+      items.push({ s, deadline: dl, diff, amount });
     }
   });
   items.sort((a, b) => a.diff - b.diff);
@@ -3712,6 +3736,7 @@ function TuitionReminderBanner({ students, settings, onGoStudent, onGoPayments }
               <span className="font-bold text-gray-800">{s.name}</span>
               <span className="text-xs text-gray-600">마감 <strong>{fmtKDate(deadline)}</strong> · <strong className="text-rose-700">{fmtWon(amount)}</strong></span>
               <span className="ml-auto flex gap-1">
+                <button onClick={() => copyText(buildPaymentMessage(s, settings, deadline, amount))} className="px-2.5 py-1 bg-yellow-500 hover:bg-yellow-600 text-white text-[11px] rounded font-semibold" title="학부모께 보낼 안내 문자를 복사해요">📩 문자 복사</button>
                 <button onClick={() => onGoStudent(s.id)} className="px-2.5 py-1 bg-amber-600 hover:bg-amber-700 text-white text-[11px] rounded font-semibold">📋 안내문</button>
                 <button onClick={onGoPayments} className="px-2.5 py-1 bg-rose-600 hover:bg-rose-700 text-white text-[11px] rounded font-semibold">💰 납부 현황</button>
               </span>
@@ -3723,16 +3748,19 @@ function TuitionReminderBanner({ students, settings, onGoStudent, onGoPayments }
       {/* ⏰ 등록 마감 임박 (안내 보낼 때) */}
       {items.length > 0 && (
         <div className="px-4 py-2 space-y-1">
-          {items.map(({ s, deadline, diff }) => {
+          {items.map(({ s, deadline, diff, amount }) => {
             const d = ddayLabel(diff);
             return (
               <div key={s.id} className="flex items-center gap-2 flex-wrap text-sm">
                 <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full border ${d.cls}`}>{d.text}</span>
                 <span className="font-bold text-gray-800">{s.name}</span>
                 <span className="text-xs text-gray-600">등록 마감일: <strong>{fmtKDate(deadline)}</strong></span>
-                <button onClick={() => onGoStudent(s.id)} className="ml-auto px-2.5 py-1 bg-amber-600 hover:bg-amber-700 text-white text-[11px] rounded font-semibold">
-                  📋 안내문 보기
-                </button>
+                <span className="ml-auto flex gap-1">
+                  <button onClick={() => copyText(buildPaymentMessage(s, settings, deadline, amount))} className="px-2.5 py-1 bg-yellow-500 hover:bg-yellow-600 text-white text-[11px] rounded font-semibold" title="학부모께 보낼 안내 문자를 복사해요">📩 문자 복사</button>
+                  <button onClick={() => onGoStudent(s.id)} className="px-2.5 py-1 bg-amber-600 hover:bg-amber-700 text-white text-[11px] rounded font-semibold">
+                    📋 안내문 보기
+                  </button>
+                </span>
               </div>
             );
           })}
@@ -3781,6 +3809,7 @@ function AlertBoardModal({ students, settings, onClose, onGoStudent, onGoPayment
                     <span className="font-bold text-gray-800">{s.name}</span>
                     <span className="text-xs text-gray-600">마감 <strong>{fmtKDate(deadline)}</strong> · <strong className="text-rose-700">{fmtWon(amount)}</strong></span>
                     <span className="ml-auto flex gap-1">
+                      <button onClick={() => copyText(buildPaymentMessage(s, settings, deadline, amount))} className="px-2.5 py-1 bg-yellow-500 hover:bg-yellow-600 text-white text-[11px] rounded font-semibold" title="학부모께 보낼 안내 문자를 복사해요">📩 문자 복사</button>
                       <button onClick={() => { onGoStudent(s.id); onClose(); }} className="px-2.5 py-1 bg-amber-600 hover:bg-amber-700 text-white text-[11px] rounded font-semibold">📋 안내문</button>
                       <button onClick={() => { onGoPayments(); onClose(); }} className="px-2.5 py-1 bg-rose-600 hover:bg-rose-700 text-white text-[11px] rounded font-semibold">💰 납부 현황</button>
                     </span>
@@ -3794,14 +3823,17 @@ function AlertBoardModal({ students, settings, onClose, onGoStudent, onGoPayment
             <div>
               <div className="text-sm font-bold text-amber-800 mb-1.5">⏰ 등록 마감 임박 — 안내 보낼 학생 ({items.length}명)</div>
               <div className="space-y-1 p-2 bg-amber-50 border border-amber-200 rounded">
-                {items.map(({ s, deadline, diff }) => {
+                {items.map(({ s, deadline, diff, amount }) => {
                   const d = ddayLabel(diff);
                   return (
                     <div key={s.id} className="flex items-center gap-2 flex-wrap text-sm">
                       <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full border ${d.cls}`}>{d.text}</span>
                       <span className="font-bold text-gray-800">{s.name}</span>
                       <span className="text-xs text-gray-600">등록 마감일: <strong>{fmtKDate(deadline)}</strong></span>
-                      <button onClick={() => { onGoStudent(s.id); onClose(); }} className="ml-auto px-2.5 py-1 bg-amber-600 hover:bg-amber-700 text-white text-[11px] rounded font-semibold">📋 안내문 보기</button>
+                      <span className="ml-auto flex gap-1">
+                        <button onClick={() => copyText(buildPaymentMessage(s, settings, deadline, amount))} className="px-2.5 py-1 bg-yellow-500 hover:bg-yellow-600 text-white text-[11px] rounded font-semibold" title="학부모께 보낼 안내 문자를 복사해요">📩 문자 복사</button>
+                        <button onClick={() => { onGoStudent(s.id); onClose(); }} className="px-2.5 py-1 bg-amber-600 hover:bg-amber-700 text-white text-[11px] rounded font-semibold">📋 안내문 보기</button>
+                      </span>
                     </div>
                   );
                 })}
@@ -5968,7 +6000,113 @@ function PolicyTab({ settings }) {
 //  7. 학원 정보 설정 탭
 // ═══════════════════════════════════════════════════
 
-function SettingsTab({ settings, setSettings, students }) {
+// 👥 계정 관리 (학원 정보 탭) — 명단 추가/삭제 + 내 비밀번호 변경
+function AccountManager({ cloudUser, isAdmin }) {
+  const [list, setList] = useState(null);
+  const [newEmail, setNewEmail] = useState('');
+  const [newIsAdmin, setNewIsAdmin] = useState(false);
+  const [newPw, setNewPw] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const loadList = async () => {
+    const { data, error } = await sb.from('allowed_emails').select('*').order('added_at');
+    if (!error) setList(data || []);
+  };
+  useEffect(() => { if (isAdmin) loadList(); }, [isAdmin]);
+
+  const addEmail = async () => {
+    const em = newEmail.trim().toLowerCase();
+    if (!em || !em.includes('@')) { alert('이메일을 정확히 입력하세요'); return; }
+    setBusy(true);
+    const { error } = await sb.from('allowed_emails').insert({ email: em, is_admin: newIsAdmin });
+    setBusy(false);
+    if (error) { alert('추가 실패: ' + (error.message.includes('duplicate') ? '이미 명단에 있는 이메일이에요' : error.message)); return; }
+    setNewEmail(''); setNewIsAdmin(false);
+    loadList();
+    alert(`✅ ${em} 이 명단에 추가됐어요.\n\n그 선생님께 이렇게 안내하세요:\n"사이트 접속 → [처음 계정 만들기] 탭에서 이 이메일로 비밀번호를 만들면 바로 사용 가능"`);
+  };
+
+  const removeEmail = async (em) => {
+    if (em === cloudUser.email) { alert('본인 계정은 삭제할 수 없어요'); return; }
+    if (!confirm(`${em} 을 명단에서 삭제할까요?\n삭제하면 그 계정은 더 이상 데이터를 볼 수 없습니다.`)) return;
+    const { error } = await sb.from('allowed_emails').delete().eq('email', em);
+    if (error) { alert('삭제 실패: ' + error.message); return; }
+    loadList();
+  };
+
+  const toggleAdmin = async (em, cur) => {
+    if (em === cloudUser.email && cur) { alert('본인의 관리자 권한은 해제할 수 없어요'); return; }
+    const { error } = await sb.from('allowed_emails').update({ is_admin: !cur }).eq('email', em);
+    if (error) { alert('변경 실패: ' + error.message); return; }
+    loadList();
+  };
+
+  const changeMyPw = async () => {
+    if (newPw.length < 6) { alert('비밀번호는 6자 이상으로 만들어주세요'); return; }
+    setBusy(true);
+    const { error } = await sb.auth.updateUser({ password: newPw });
+    setBusy(false);
+    if (error) { alert('변경 실패: ' + error.message); return; }
+    setNewPw('');
+    alert('✅ 비밀번호가 변경됐어요. 다음 로그인부터 새 비밀번호를 쓰세요.');
+  };
+
+  return (
+    <Section title="👥 계정 관리 (데이터 공유)">
+      <div className="text-xs text-gray-500 mb-3">
+        지금 로그인: <strong className="text-gray-700">{cloudUser.email}</strong>{isAdmin && <span className="ml-1 text-[10px] px-1.5 py-0.5 bg-indigo-100 text-indigo-700 rounded font-bold">관리자</span>}
+      </div>
+
+      {/* 내 비밀번호 변경 (모두 가능) */}
+      <div className="mb-4 p-3 bg-gray-50 border rounded">
+        <div className="text-xs font-semibold text-gray-700 mb-1.5">🔑 내 비밀번호 변경</div>
+        <div className="flex gap-2 items-center flex-wrap">
+          <input type="password" value={newPw} onChange={(e) => setNewPw(e.target.value)} placeholder="새 비밀번호 (6자 이상)" className="px-3 py-1.5 border rounded text-sm flex-1 min-w-[160px]" />
+          <button onClick={changeMyPw} disabled={busy} className="px-3 py-1.5 bg-blue-600 text-white rounded text-xs font-semibold">변경</button>
+        </div>
+      </div>
+
+      {isAdmin ? (
+        <div className="p-3 bg-indigo-50 border border-indigo-200 rounded">
+          <div className="text-xs font-semibold text-indigo-800 mb-1.5">✉️ 사용 허용 명단 (선생님 추가는 여기서!)</div>
+          <div className="flex gap-2 items-center flex-wrap mb-2">
+            <input type="email" value={newEmail} onChange={(e) => setNewEmail(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && addEmail()} placeholder="선생님 이메일" className="px-3 py-1.5 border rounded text-sm flex-1 min-w-[180px]" />
+            <label className="flex items-center gap-1 text-xs text-gray-600 cursor-pointer">
+              <input type="checkbox" checked={newIsAdmin} onChange={(e) => setNewIsAdmin(e.target.checked)} className="w-4 h-4" /> 관리자로
+            </label>
+            <button onClick={addEmail} disabled={busy} className="px-3 py-1.5 bg-indigo-600 text-white rounded text-xs font-semibold">+ 추가</button>
+          </div>
+          {list === null ? (
+            <div className="text-xs text-gray-400">명단 불러오는 중… (안 나오면 아래 안내의 SQL을 실행해주세요)</div>
+          ) : (
+            <div className="space-y-1">
+              {list.map(row => (
+                <div key={row.email} className="flex items-center gap-2 bg-white border rounded px-2 py-1.5 text-sm">
+                  <span className="font-medium text-gray-800">{row.email}</span>
+                  {row.email === cloudUser.email && <span className="text-[10px] text-gray-400">(나)</span>}
+                  <button
+                    onClick={() => toggleAdmin(row.email, row.is_admin)}
+                    className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${row.is_admin ? 'bg-indigo-100 text-indigo-700' : 'bg-gray-100 text-gray-400 hover:bg-gray-200'}`}
+                    title="클릭하면 관리자 권한이 켜지고 꺼져요"
+                  >{row.is_admin ? '관리자' : '일반'}</button>
+                  <button onClick={() => removeEmail(row.email)} className="ml-auto text-rose-500 hover:bg-rose-50 rounded px-1.5 text-xs">삭제</button>
+                </div>
+              ))}
+            </div>
+          )}
+          <p className="text-[10px] text-indigo-600/80 mt-2 leading-relaxed">
+            💡 추가한 이메일의 선생님은 <strong>로그인 화면 → [처음 계정 만들기]</strong>에서 스스로 비밀번호를 만들어 시작합니다.
+            명단에 없는 이메일은 계정을 만들어도 데이터를 볼 수 없어요.
+          </p>
+        </div>
+      ) : (
+        <p className="text-[11px] text-gray-400">선생님 계정 추가·삭제는 관리자만 할 수 있어요.</p>
+      )}
+    </Section>
+  );
+}
+
+function SettingsTab({ settings, setSettings, students, cloudUser, isAdmin }) {
   const update = (k, v) => setSettings({ ...settings, [k]: v });
   const updateList = (k, idx, v) => {
     const arr = [...(settings[k] || [])];
@@ -5980,6 +6118,8 @@ function SettingsTab({ settings, setSettings, students }) {
 
   return (
     <div className="max-w-3xl space-y-4">
+      {sb && cloudUser && <AccountManager cloudUser={cloudUser} isAdmin={isAdmin} />}
+
       <Section title="학원 기본 정보">
         <Row label="학원명 (한글)"><input type="text" value={settings.academyName} onChange={(e) => update('academyName', e.target.value)} className="input" /></Row>
         <Row label="학원명 (영문)"><input type="text" value={settings.academyNameEn} onChange={(e) => update('academyNameEn', e.target.value)} className="input" /></Row>
@@ -6307,7 +6447,7 @@ function PaymentHistoryModal({ student, onClose, onUpdate }) {
   );
 }
 
-function PaymentTab({ students, setStudents, privacyMode }) {
+function PaymentTab({ students, setStudents, privacyMode, settings }) {
   const pmask = (val, suffix = '') => privacyMode ? '•••' : `${val.toLocaleString()}${suffix}`;
   const [yearMonth, setYearMonth] = useState(() => {
     const d = new Date();
@@ -6519,7 +6659,16 @@ function PaymentTab({ students, setStudents, privacyMode }) {
                     <input type="text" value={p.note || ''} onChange={(e) => updatePayment(s.id, { note: e.target.value })} placeholder="메모 (선택)" className="w-full px-2 py-1 text-xs border rounded" />
                   </td>
                   <td className="px-3 py-2 text-center">
-                    <button onClick={() => setHistoryStudent(s)} className="px-2 py-1 text-xs bg-indigo-100 hover:bg-indigo-200 text-indigo-700 rounded font-semibold" title="이 학생의 전체 납부 이력 보기">📜</button>
+                    <div className="flex gap-1 justify-center">
+                      <button onClick={() => setHistoryStudent(s)} className="px-2 py-1 text-xs bg-indigo-100 hover:bg-indigo-200 text-indigo-700 rounded font-semibold" title="이 학생의 전체 납부 이력 보기">📜</button>
+                      {!isPaid && (
+                        <button
+                          onClick={() => copyText(buildPaymentMessage(s, settings || DEFAULT_SETTINGS, getRegistrationDeadline(s, settings || DEFAULT_SETTINGS), amount))}
+                          className="px-2 py-1 text-xs bg-yellow-100 hover:bg-yellow-200 text-yellow-700 rounded font-semibold"
+                          title="학부모께 보낼 안내 문자 복사"
+                        >📩</button>
+                      )}
+                    </div>
                   </td>
                 </tr>
               );
@@ -6548,6 +6697,7 @@ function LoginScreen({ onLoggedIn, onOffline }) {
   const [pw, setPw] = useState('');
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
+  const [mode, setMode] = useState('login'); // 'login' | 'signup'
 
   const doLogin = async () => {
     if (!email.trim() || !pw) { setErr('이메일과 비밀번호를 입력하세요'); return; }
@@ -6562,6 +6712,43 @@ function LoginScreen({ onLoggedIn, onOffline }) {
     }
   };
 
+  // 처음 계정 만들기 (원장님이 명단에 추가해둔 이메일만 실제 사용 가능)
+  const doSignup = async () => {
+    if (!email.trim() || !pw) { setErr('이메일과 비밀번호를 입력하세요'); return; }
+    if (pw.length < 6) { setErr('비밀번호는 6자 이상으로 만들어주세요'); return; }
+    setBusy(true); setErr('');
+    try {
+      const { data, error } = await sb.auth.signUp({ email: email.trim(), password: pw });
+      if (error) {
+        setErr(error.message && error.message.includes('disabled')
+          ? '지금은 새 가입이 막혀 있어요. 원장님께 문의하세요.'
+          : '계정 만들기 실패 — 이미 있는 이메일이면 [로그인]으로 시도해보세요');
+        setBusy(false);
+        return;
+      }
+      if (data.session && data.user) { onLoggedIn(data.user); return; }
+      // 이메일 확인이 켜져 있는 경우
+      setBusy(false);
+      setMode('login');
+      setErr('✅ 계정이 만들어졌어요! 이메일 확인이 필요하면 받은 메일의 링크를 눌러주세요.');
+    } catch (e) {
+      setErr('서버 연결에 실패했어요. 인터넷 연결을 확인하세요.');
+      setBusy(false);
+    }
+  };
+
+  // 비밀번호 재설정 메일 보내기
+  const doForgot = async () => {
+    const target = email.trim() || prompt('비밀번호를 재설정할 이메일을 입력하세요');
+    if (!target) return;
+    try {
+      await sb.auth.resetPasswordForEmail(target, { redirectTo: 'https://forcedunsan.github.io/academy/' });
+      alert('📧 ' + target + ' 로 재설정 메일을 보냈어요.\n메일의 링크를 누르면 새 비밀번호를 만들 수 있습니다.\n(메일이 안 오면 스팸함도 확인해주세요)');
+    } catch (e) {
+      alert('메일 발송에 실패했어요. 잠시 후 다시 시도해주세요.');
+    }
+  };
+
   return (
     <div className="min-h-screen invoice-navy wave-bg flex items-center justify-center p-4">
       <div className="w-full max-w-sm">
@@ -6571,18 +6758,36 @@ function LoginScreen({ onLoggedIn, onOffline }) {
           <p className="text-white/60 text-xs mt-2">학원에서 발급받은 계정으로 로그인하세요</p>
         </div>
         <div className="bg-white rounded-xl shadow-2xl p-6 space-y-3">
+          <div className="flex rounded-lg overflow-hidden border border-gray-200">
+            <button onClick={() => { setMode('login'); setErr(''); }} className={`flex-1 py-2 text-sm font-bold transition ${mode === 'login' ? 'bg-blue-600 text-white' : 'bg-gray-50 text-gray-500 hover:bg-gray-100'}`}>로그인</button>
+            <button onClick={() => { setMode('signup'); setErr(''); }} className={`flex-1 py-2 text-sm font-bold transition ${mode === 'signup' ? 'bg-emerald-600 text-white' : 'bg-gray-50 text-gray-500 hover:bg-gray-100'}`}>처음 계정 만들기</button>
+          </div>
+          {mode === 'signup' && (
+            <p className="text-[11px] text-emerald-700 bg-emerald-50 border border-emerald-200 rounded p-2 leading-relaxed">
+              원장님이 <strong>계정 명단에 추가해둔 이메일</strong>로 비밀번호를 만들어 시작하세요.
+            </p>
+          )}
           <div>
             <label className="block text-xs font-semibold text-gray-700 mb-1">이메일</label>
-            <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && doLogin()} className="w-full px-3 py-2.5 border rounded text-sm" placeholder="name@example.com" autoFocus />
+            <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && (mode === 'login' ? doLogin() : doSignup())} className="w-full px-3 py-2.5 border rounded text-sm" placeholder="name@example.com" autoFocus />
           </div>
           <div>
             <label className="block text-xs font-semibold text-gray-700 mb-1">비밀번호</label>
-            <input type="password" value={pw} onChange={(e) => setPw(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && doLogin()} className="w-full px-3 py-2.5 border rounded text-sm" placeholder="••••••••" />
+            <input type="password" value={pw} onChange={(e) => setPw(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && (mode === 'login' ? doLogin() : doSignup())} className="w-full px-3 py-2.5 border rounded text-sm" placeholder="••••••••" />
           </div>
-          {err && <div className="text-xs text-rose-600 font-semibold bg-rose-50 border border-rose-200 rounded p-2">{err}</div>}
-          <button onClick={doLogin} disabled={busy} className={`w-full py-2.5 rounded text-sm font-bold text-white transition ${busy ? 'bg-gray-400' : 'bg-blue-600 hover:bg-blue-700'}`}>
-            {busy ? '로그인 중…' : '로그인'}
-          </button>
+          {err && <div className={`text-xs font-semibold rounded p-2 ${err.startsWith('✅') ? 'text-emerald-700 bg-emerald-50 border border-emerald-200' : 'text-rose-600 bg-rose-50 border border-rose-200'}`}>{err}</div>}
+          {mode === 'login' ? (
+            <button onClick={doLogin} disabled={busy} className={`w-full py-2.5 rounded text-sm font-bold text-white transition ${busy ? 'bg-gray-400' : 'bg-blue-600 hover:bg-blue-700'}`}>
+              {busy ? '로그인 중…' : '로그인'}
+            </button>
+          ) : (
+            <button onClick={doSignup} disabled={busy} className={`w-full py-2.5 rounded text-sm font-bold text-white transition ${busy ? 'bg-gray-400' : 'bg-emerald-600 hover:bg-emerald-700'}`}>
+              {busy ? '만드는 중…' : '계정 만들고 시작하기'}
+            </button>
+          )}
+          <div className="text-center">
+            <button onClick={doForgot} className="text-[11px] text-gray-400 hover:text-gray-600 underline">비밀번호를 잊었어요</button>
+          </div>
           <p className="text-[10px] text-gray-400 text-center leading-relaxed">
             로그인하면 학생·납부 데이터가 서버에 안전하게 저장되고<br />다른 선생님과 실시간으로 공유됩니다.
           </p>
@@ -6638,14 +6843,35 @@ function App() {
   const lastServerStampRef = useRef(null);
   const suppressPushRef = useRef(true); // 서버에서 불러온 직후 재업로드 방지
   const pushTimerRef = useRef(null);
+  const channelRef = useRef(null); // 실시간 채널
+  const [allowedInfo, setAllowedInfo] = useState(null); // null=확인 중, 'denied'=허용 안 됨, {email, is_admin}
+  const isAdmin = !!(allowedInfo && allowedInfo !== 'denied' && allowedInfo.is_admin);
+  const cloudReady = !!(cloudUser && allowedInfo && allowedInfo !== 'denied');
 
-  // 로그인 세션 확인 (앱 시작 시 1회)
+  // 로그인 세션 확인 (앱 시작 시 1회) + 비밀번호 재설정 링크 처리
   useEffect(() => {
     if (!sb || offlineMode) { setCloudUser(null); return; }
     sb.auth.getSession().then(({ data }) => {
       setCloudUser(data && data.session ? data.session.user : null);
     }).catch(() => setCloudUser(null));
+    const { data: sub } = sb.auth.onAuthStateChange((event, session) => {
+      if (event === 'PASSWORD_RECOVERY') {
+        const np = prompt('🔑 새 비밀번호를 입력하세요 (6자 이상)');
+        if (np) sb.auth.updateUser({ password: np }).then(({ error }) => alert(error ? '변경 실패: ' + error.message : '✅ 비밀번호가 변경되었습니다. 이제 새 비밀번호로 로그인됩니다.'));
+      }
+      if (session && session.user) setCloudUser(session.user);
+    });
+    return () => { try { sub.subscription.unsubscribe(); } catch (e) {} };
   }, []);
+
+  // 허용 명단 확인 (앱 내 계정 관리) — 명단 표가 아직 없으면(구 버전 서버) 그냥 통과
+  useEffect(() => {
+    if (!cloudUser) return;
+    sb.from('allowed_emails').select('email,is_admin').eq('email', cloudUser.email).then(({ data, error }) => {
+      if (error) { setAllowedInfo({ email: cloudUser.email, is_admin: false, legacy: true }); return; }
+      setAllowedInfo(data && data.length > 0 ? data[0] : 'denied');
+    }).catch(() => setAllowedInfo({ email: cloudUser.email, is_admin: false, legacy: true }));
+  }, [cloudUser]);
 
   // 서버 데이터를 화면에 적용
   const applyServerData = (row) => {
@@ -6707,19 +6933,31 @@ function App() {
     }
   };
 
-  // 로그인되면 불러오기 시작
+  // 로그인 + 허용 확인되면 불러오기 시작 (60초 폴링은 실시간이 놓칠 때의 안전망)
   useEffect(() => {
-    if (!cloudUser) return;
+    if (!cloudReady) return;
     pullFromCloud(true);
     const iv = setInterval(() => pullFromCloud(false), 60000);
     const onFocus = () => pullFromCloud(false);
     window.addEventListener('focus', onFocus);
     return () => { clearInterval(iv); window.removeEventListener('focus', onFocus); };
-  }, [cloudUser]);
+  }, [cloudReady]);
 
-  // 데이터가 바뀌면 서버에 자동 저장 (1.5초 묶어서)
+  // ⚡ 실시간 반영: 다른 사람이 저장하면 즉시 신호를 받아 바로 불러옴
   useEffect(() => {
-    if (!sb || !cloudUser) return;
+    if (!cloudReady) return;
+    const ch = sb.channel('academy-sync');
+    ch.on('broadcast', { event: 'changed' }, (msg) => {
+      if (msg && msg.payload && msg.payload.by === cloudUser.email) return; // 내 저장 신호는 무시
+      pullFromCloud(false);
+    }).subscribe();
+    channelRef.current = ch;
+    return () => { try { sb.removeChannel(ch); } catch (e) {} channelRef.current = null; };
+  }, [cloudReady]);
+
+  // 데이터가 바뀌면 서버에 자동 저장 (1.5초 묶어서) + 저장 후 실시간 신호 발송
+  useEffect(() => {
+    if (!sb || !cloudReady) return;
     if (suppressPushRef.current) { suppressPushRef.current = false; return; }
     setSyncStatus('saving');
     if (pushTimerRef.current) clearTimeout(pushTimerRef.current);
@@ -6731,12 +6969,16 @@ function App() {
         const { data: r2 } = await sb.from('academy_state').select('updated_at').eq('id', 1);
         if (r2 && r2[0]) lastServerStampRef.current = r2[0].updated_at;
         setSyncStatus('saved');
+        // ⚡ 다른 화면들에게 "바뀌었어요" 신호 → 즉시 반영됨
+        if (channelRef.current) {
+          try { channelRef.current.send({ type: 'broadcast', event: 'changed', payload: { by: cloudUser.email } }); } catch (e) {}
+        }
       } catch (e) {
         console.log('[클라우드 저장 실패]', e);
         setSyncStatus('error');
       }
     }, 1500);
-  }, [students, settings, cloudUser]);
+  }, [students, settings, cloudReady]);
   const [showBulkImport, setShowBulkImport] = useState(false);
   const [backupReminder, setBackupReminder] = useState(null); // null | {daysSinceBackup}
 
@@ -6953,6 +7195,25 @@ function App() {
         />
       );
     }
+    if (allowedInfo === 'denied') {
+      return (
+        <div className="min-h-screen invoice-navy flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl shadow-2xl p-6 max-w-sm text-center">
+            <div className="text-3xl mb-2">🚫</div>
+            <h2 className="font-bold text-gray-800 mb-2">아직 사용 허가가 없는 계정이에요</h2>
+            <p className="text-sm text-gray-600 leading-relaxed mb-4">
+              <strong>{cloudUser.email}</strong><br />
+              원장님께 이 이메일을 <strong>계정 명단에 추가</strong>해 달라고 요청하세요.<br />
+              (학원 정보 탭 → 👥 계정 관리)
+            </p>
+            <button
+              onClick={async () => { await sb.auth.signOut(); location.reload(); }}
+              className="px-4 py-2 bg-gray-700 text-white rounded text-sm font-semibold"
+            >다른 계정으로 로그인</button>
+          </div>
+        </div>
+      );
+    }
   }
 
   return (
@@ -7086,7 +7347,7 @@ function App() {
           />
         )}
         {tab === 'payments' && (
-          <PaymentTab students={students} setStudents={setStudents} privacyMode={privacyMode} />
+          <PaymentTab students={students} setStudents={setStudents} privacyMode={privacyMode} settings={settings} />
         )}
         {tab === 'reports' && (
           <ReportsTab students={students} settings={settings} privacyMode={privacyMode} />
@@ -7098,7 +7359,7 @@ function App() {
           <PolicyTab settings={settings} />
         )}
         {tab === 'settings' && (
-          <SettingsTab settings={settings} setSettings={setSettings} students={students} />
+          <SettingsTab settings={settings} setSettings={setSettings} students={students} cloudUser={cloudUser} isAdmin={isAdmin} />
         )}
       </main>
 
