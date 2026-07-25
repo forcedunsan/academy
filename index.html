@@ -3629,23 +3629,33 @@ const getRegistrationDeadline = (student, settings) => {
   return addDays(earliest, -1);
 };
 
-// ⏰ 수강료 안내 알림 배너 (등록 마감 5일 전부터 표시)
-function TuitionReminderBanner({ students, settings, onGoStudent }) {
+// ⏰ 수강료 안내 알림 배너 (등록 마감 5일 전부터) + 🔴 마감 지난 미납 학생
+function TuitionReminderBanner({ students, settings, onGoStudent, onGoPayments }) {
   const REMIND_DAYS = 5;
   const todayStr = formatDateStr(new Date());
   const [dismissed, setDismissed] = useState(() => storage.get('tuition_remind_dismiss') === todayStr);
 
   const today = parseDate(todayStr);
-  const items = [];
+  const todayYm = todayStr.slice(0, 7);
+  const items = [];      // 마감 임박 (안내 보낼 때)
+  const overdueUnpaid = []; // 마감 지남 + 미납
   (students || []).forEach(s => {
     const dl = getRegistrationDeadline(s, settings);
     if (!dl) return;
     const diff = Math.round((dl.getTime() - today.getTime()) / 86400000);
-    if (diff <= REMIND_DAYS && diff >= -7) items.push({ s, deadline: dl, diff });
+    const dlYm = formatDateStr(dl).slice(0, 7);
+    const isPaid = (s.payments && ((s.payments[todayYm] && s.payments[todayYm].status === 'paid') || (s.payments[dlYm] && s.payments[dlYm].status === 'paid'))) || false;
+    const amount = (s.subjects || []).reduce((a, x) => a + (x.tuition || 0), 0) + (s.materials || []).reduce((a, x) => a + (x.amount || 0), 0);
+    if (diff < 0 && diff >= -60 && !isPaid) {
+      overdueUnpaid.push({ s, deadline: dl, diff, amount });
+    } else if (diff <= REMIND_DAYS && diff >= -7) {
+      items.push({ s, deadline: dl, diff });
+    }
   });
   items.sort((a, b) => a.diff - b.diff);
+  overdueUnpaid.sort((a, b) => a.diff - b.diff);
 
-  if (items.length === 0 || dismissed) return null;
+  if ((items.length === 0 && overdueUnpaid.length === 0) || dismissed) return null;
 
   const dismissToday = () => {
     storage.set('tuition_remind_dismiss', todayStr);
@@ -3662,27 +3672,51 @@ function TuitionReminderBanner({ students, settings, onGoStudent }) {
     <div className="mb-4 border-2 border-amber-400 bg-amber-50 rounded-lg overflow-hidden">
       <div className="flex items-center justify-between px-4 py-2 bg-amber-100">
         <span className="text-sm font-bold text-amber-900">
-          ⏰ 수강료 안내 알림 — 등록 마감 {REMIND_DAYS}일 전 학생 <span className="text-rose-600">{items.length}명</span>
+          ⏰ 수강료 알림
+          {items.length > 0 && <span className="ml-2">마감 임박 <span className="text-rose-600">{items.length}명</span></span>}
+          {overdueUnpaid.length > 0 && <span className="ml-2">· 🔴 마감 지난 미납 <span className="text-rose-600 font-extrabold">{overdueUnpaid.length}명</span></span>}
         </span>
         <button onClick={dismissToday} className="text-[11px] text-amber-700 hover:text-amber-900 underline">오늘 하루 그만 보기</button>
       </div>
-      <div className="px-4 py-2 space-y-1">
-        {items.map(({ s, deadline, diff }) => {
-          const d = ddayLabel(diff);
-          return (
+
+      {/* 🔴 등록 마감일이 지났는데 미납인 학생 */}
+      {overdueUnpaid.length > 0 && (
+        <div className="px-4 py-2 space-y-1 bg-rose-50 border-b border-rose-200">
+          {overdueUnpaid.map(({ s, deadline, diff, amount }) => (
             <div key={s.id} className="flex items-center gap-2 flex-wrap text-sm">
-              <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full border ${d.cls}`}>{d.text}</span>
+              <span className="text-[11px] font-bold px-2 py-0.5 rounded-full border bg-rose-600 text-white border-rose-700">미납 {-diff}일째</span>
               <span className="font-bold text-gray-800">{s.name}</span>
-              <span className="text-xs text-gray-600">등록 마감일: <strong>{fmtKDate(deadline)}</strong></span>
-              <button onClick={() => onGoStudent(s.id)} className="ml-auto px-2.5 py-1 bg-amber-600 hover:bg-amber-700 text-white text-[11px] rounded font-semibold">
-                📋 안내문 보기
-              </button>
+              <span className="text-xs text-gray-600">마감 <strong>{fmtKDate(deadline)}</strong> · <strong className="text-rose-700">{fmtWon(amount)}</strong></span>
+              <span className="ml-auto flex gap-1">
+                <button onClick={() => onGoStudent(s.id)} className="px-2.5 py-1 bg-amber-600 hover:bg-amber-700 text-white text-[11px] rounded font-semibold">📋 안내문</button>
+                <button onClick={onGoPayments} className="px-2.5 py-1 bg-rose-600 hover:bg-rose-700 text-white text-[11px] rounded font-semibold">💰 납부 현황</button>
+              </span>
             </div>
-          );
-        })}
-      </div>
+          ))}
+        </div>
+      )}
+
+      {/* ⏰ 등록 마감 임박 (안내 보낼 때) */}
+      {items.length > 0 && (
+        <div className="px-4 py-2 space-y-1">
+          {items.map(({ s, deadline, diff }) => {
+            const d = ddayLabel(diff);
+            return (
+              <div key={s.id} className="flex items-center gap-2 flex-wrap text-sm">
+                <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full border ${d.cls}`}>{d.text}</span>
+                <span className="font-bold text-gray-800">{s.name}</span>
+                <span className="text-xs text-gray-600">등록 마감일: <strong>{fmtKDate(deadline)}</strong></span>
+                <button onClick={() => onGoStudent(s.id)} className="ml-auto px-2.5 py-1 bg-amber-600 hover:bg-amber-700 text-white text-[11px] rounded font-semibold">
+                  📋 안내문 보기
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
       <div className="px-4 py-1.5 bg-amber-100/60 text-[10px] text-amber-700">
-        💡 안내문을 보내고 <strong>"➡️ 다음 주기로 이동"</strong>을 누르면 그 학생의 알림이 사라집니다. 마감일 = 다음 주기 시작 전날 (일정 변경 반영).
+        💡 안내 후 <strong>"➡️ 다음 주기로 이동"</strong>하면 알림이 사라지고, 미납 알림은 <strong>납부완료 처리</strong>하면 사라집니다. 마감일 = 다음 주기 시작 전날 (일정 변경 반영).
       </div>
     </div>
   );
@@ -6655,6 +6689,7 @@ function App() {
           students={students}
           settings={settings}
           onGoStudent={(id) => { setSelectedId(id); setTab('invoices'); }}
+          onGoPayments={() => setTab('payments')}
         />
 
         {tab === 'students' && (
