@@ -6520,8 +6520,10 @@ function PaymentTab({ students, setStudents, privacyMode, settings }) {
     const d = new Date(y, m - 2, 1);
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
   };
+  // 실제 내용이 있는 납부 기록인지 (실수 클릭으로 생긴 빈 기록은 무시)
+  const isRealPayment = (p) => !!(p && (p.status === 'paid' || p.paidDate || (p.note && p.note.trim())));
   const isEnrolledInMonth = (s, ym) => {
-    if (s.payments && s.payments[ym]) return true; // 그 달 납부 기록이 있으면 무조건 표시
+    if (s.payments && isRealPayment(s.payments[ym])) return true; // 그 달에 실제 납부 기록이 있으면 표시
     // 첫 등원일이 입력되어 있으면 그게 기준 (가장 정확)
     if (s.enrollDate) {
       if (ym < s.enrollDate.slice(0, 7)) return false;
@@ -6529,7 +6531,7 @@ function PaymentTab({ students, setStudents, privacyMode, settings }) {
       return true;
     }
     const known = [];
-    Object.keys(s.payments || {}).forEach(k => known.push(k));
+    Object.keys(s.payments || {}).forEach(k => { if (isRealPayment(s.payments[k])) known.push(k); });
     (s.cycleHistory || []).forEach(h => {
       if (h.yearMonth) known.push(h.yearMonth);
       (h.subjects || []).forEach(hs => { if (hs.startDate) known.push(hs.startDate.slice(0, 7)); });
