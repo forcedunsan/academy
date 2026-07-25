@@ -6276,11 +6276,38 @@ function PaymentTab({ students, setStudents, privacyMode }) {
     }));
   };
 
-  // 재원생만 대상 (퇴원·휴원생은 납부 대상 아님 — 통계 기준)
-  const activeStudents = students.filter(s => !s.isWithdrawn && !s.isSuspended);
+  // 선택한 달에 등록(재원)했던 학생인지 판단 — 그 달 이전에 온 적 없거나 퇴원 이후인 학생은 제외
+  const prevYmOf = (ym) => {
+    const [y, m] = ym.split('-').map(Number);
+    const d = new Date(y, m - 2, 1);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+  };
+  const isEnrolledInMonth = (s, ym) => {
+    if (s.payments && s.payments[ym]) return true; // 그 달 납부 기록이 있으면 무조건 표시
+    const known = [];
+    Object.keys(s.payments || {}).forEach(k => known.push(k));
+    (s.cycleHistory || []).forEach(h => {
+      if (h.yearMonth) known.push(h.yearMonth);
+      (h.subjects || []).forEach(hs => { if (hs.startDate) known.push(hs.startDate.slice(0, 7)); });
+    });
+    (s.subjects || []).forEach(sub => {
+      if (sub.startDate) {
+        const m = sub.startDate.slice(0, 7);
+        known.push(sub.isNew ? m : prevYmOf(m)); // 신규가 아니면 지난 주기(약 한 달 전)부터 재원으로 간주
+      }
+    });
+    if (known.length === 0) return true; // 판단할 정보가 없으면 표시
+    const first = known.sort()[0];
+    if (ym < first) return false; // 등록 전 달
+    if (s.isWithdrawn && s.withdrawnDate && ym > s.withdrawnDate.slice(0, 7)) return false; // 퇴원 다음 달부터 제외
+    return true;
+  };
 
-  // 목록은 옵션에 따라 퇴원·휴원생 포함 (과거 납부 이력 조회용)
-  const listBase = includeInactive ? students : activeStudents;
+  // 재원생만 대상 (퇴원·휴원생은 납부 대상 아님 — 통계 기준). 선택한 달 재원생만.
+  const activeStudents = students.filter(s => !s.isWithdrawn && !s.isSuspended && isEnrolledInMonth(s, yearMonth));
+
+  // 목록은 옵션에 따라 퇴원·휴원생 포함 (과거 납부 이력 조회용) — 역시 그 달 재원생만
+  const listBase = includeInactive ? students.filter(s => isEnrolledInMonth(s, yearMonth)) : activeStudents;
   const filtered = sortStudentsByName(listBase.filter(s => {
     if (search && !s.name.includes(search)) return false;
     const p = getPayment(s);
@@ -6341,10 +6368,10 @@ function PaymentTab({ students, setStudents, privacyMode }) {
 
       {/* 통계 */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <StatCard title="전체 학생" value={privacyMode ? '••• ' : `${students.length}명`} color="blue" />
+        <StatCard title="이 달 재원생" value={privacyMode ? '••• ' : `${activeStudents.length}명`} color="blue" />
         <StatCard title="납부 완료" value={privacyMode ? '•••' : `${paidCount}명 · ${fmtWon(paidAmount)}`} color="green" />
         <StatCard title="미납" value={privacyMode ? '•••' : `${unpaidCount}명 · ${fmtWon(unpaidAmount)}`} color="red" />
-        <StatCard title="납부율" value={`${students.length === 0 ? 0 : Math.round((paidCount / students.length) * 100)}%`} color="orange" />
+        <StatCard title="납부율" value={`${activeStudents.length === 0 ? 0 : Math.round((paidCount / activeStudents.length) * 100)}%`} color="orange" />
       </div>
 
       {/* 학생 목록 */}
@@ -6369,7 +6396,7 @@ function PaymentTab({ students, setStudents, privacyMode }) {
               const amount = getAmount(s);
               const isPaid = p.status === 'paid';
               return (
-                <tr key={s.id} className={`border-b ${isPaid ? 'bg-green-50/40' : ''} ${(s.isWithdrawn || s.isSuspended) ? 'opacity-70' : ''}`}>
+                <tr key={s.id} className={`border-b transition hover:bg-indigo-50 ${isPaid ? 'bg-green-50/40' : ''} ${(s.isWithdrawn || s.isSuspended) ? 'opacity-70' : ''}`}>
                   <td className="px-3 py-2 font-semibold text-gray-800">
                     {s.name}
                     {s.isWithdrawn && <span className="ml-1.5 text-[9px] px-1.5 py-0.5 bg-rose-100 text-rose-700 rounded font-semibold">퇴원</span>}
