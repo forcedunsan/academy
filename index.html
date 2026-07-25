@@ -1347,7 +1347,7 @@ function SchedulePreview({ subject, holidays, cycleHistory }) {
         <div className="flex items-center gap-2 mb-0.5">
           <span className="font-bold text-amber-700">📅 진행 캘린더 (지난 주기)</span>
           {histSubj && (
-            <span className="text-[10px] text-amber-600 bg-amber-100 px-1.5 py-0.5 rounded">📜 저장된 기록 기준 · 수정은 [학생 관리→📆 일정]</span>
+            <span className="text-[10px] text-amber-600 bg-amber-100 px-1.5 py-0.5 rounded">📜 저장된 기록 기준 · 아래 [📜 지난 일정 수정하기] 버튼으로 수정</span>
           )}
           {subject.isNew && (
             <span className="text-amber-600 bg-amber-100 px-1.5 py-0.5 rounded text-[10px]">
@@ -2549,7 +2549,7 @@ function InteractiveScheduleCalendar({ subject, holidays, absences, onUpdate, cy
           {histPrev && (
             <div className="mb-2 p-2 bg-amber-50 border border-amber-200 rounded text-[11px] text-amber-800">
               📜 이 과목의 <strong>지난 주기 일정은 기록으로 저장</strong>되어 있어요. 여기서는 <strong>이번 계획만</strong> 수정하고,
-              지난 일정은 <strong>학생 관리 → [📆 일정] → [✏️ 지난 일정 수정]</strong>에서 고쳐주세요.
+              지난 일정은 이 캘린더 아래의 <strong>[📜 지난 일정 수정하기]</strong> 버튼으로 고쳐주세요.
             </div>
           )}
 
@@ -2817,6 +2817,10 @@ function StudentForm({ student, onSave, onCancel, defaultSettings }) {
   });
 
   const updateField = (field, value) => setData({ ...data, [field]: value });
+
+  // 📜 지난 일정(저장된 기록) 수정 창 — 편집 화면 안에서 바로 열기
+  const [showHistoryEdit, setShowHistoryEdit] = useState(false);
+  const hasHistFor = (name) => (data.cycleHistory || []).some(h => (h.subjects || []).some(hs => hs.name === name && (hs.schedule || []).length > 0));
 
   const addSubject = () => setData({
     ...data,
@@ -3255,6 +3259,17 @@ function StudentForm({ student, onSave, onCancel, defaultSettings }) {
                     onUpdate={(patch) => updateSubject(sub.id, patch)}
                     cycleHistory={data.cycleHistory}
                   />
+
+                  {/* 지난 일정(저장된 기록) 수정 — 편집 화면 안에서 바로 */}
+                  {hasHistFor(sub.name) && (
+                    <button
+                      type="button"
+                      onClick={() => setShowHistoryEdit(true)}
+                      className="mt-2 w-full px-3 py-2 bg-amber-100 hover:bg-amber-200 border-2 border-amber-300 rounded-lg text-sm font-bold text-amber-800"
+                    >
+                      📜 지난 일정(진행 캘린더) 수정하기 — 클릭으로 날짜 변경·삭제·추가·사유
+                    </button>
+                  )}
                 </div>
               ))}
               {(!data.subjects || data.subjects.length === 0) && (
@@ -3303,6 +3318,17 @@ function StudentForm({ student, onSave, onCancel, defaultSettings }) {
           <button onClick={handleSave} className="px-5 py-2 bg-blue-600 text-white rounded text-sm font-semibold">저장</button>
         </div>
       </div>
+
+      {/* 지난 일정 수정 창 (수정 모드로 바로 열림 — 여기서 고친 내용은 [저장] 시 함께 저장) */}
+      {showHistoryEdit && (
+        <ScheduleHistoryModal
+          student={data}
+          settings={defaultSettings}
+          startInEdit={true}
+          onClose={() => setShowHistoryEdit(false)}
+          onUpdateStudent={(patch) => setData({ ...data, ...patch })}
+        />
+      )}
     </div>
   );
 }
@@ -3670,7 +3696,7 @@ function TuitionReminderBanner({ students, settings, onGoStudent }) {
 //  📆 학생별 월별 일정 조회 (저장된 이력 + 현재 일정)
 // ═══════════════════════════════════════════════════
 
-function ScheduleHistoryModal({ student, settings, onClose, onUpdateStudent }) {
+function ScheduleHistoryModal({ student, settings, onClose, onUpdateStudent, startInEdit }) {
   if (!student) return null;
   const holidayMap = new Map((settings.holidays || []).map(h => [h.date, h.label]));
 
@@ -3733,7 +3759,7 @@ function ScheduleHistoryModal({ student, settings, onClose, onUpdateStudent }) {
   });
 
   // ✏️ 지난 일정 수정 모드
-  const [editMode, setEditMode] = useState(false);
+  const [editMode, setEditMode] = useState(!!startInEdit);
   const [selEntry, setSelEntry] = useState(null);
   const [editDate, setEditDate] = useState('');
   const [editNote, setEditNote] = useState('');
