@@ -6531,9 +6531,30 @@ function PaymentTab({ students, setStudents, privacyMode, settings }) {
   const [search, setSearch] = useState('');
   const [includeInactive, setIncludeInactive] = useState(false); // 퇴원·휴원생 포함 (이력 조회용)
   const [historyStudent, setHistoryStudent] = useState(null);
+  const [expandedId, setExpandedId] = useState(null); // 💳 분할 결제 내역 펼친 학생
 
   const getPayment = (s) => (s.payments && s.payments[yearMonth]) || { status: 'pending', paidDate: '', note: '' };
-  const getAmount = (s) => (s.subjects || []).reduce((a, x) => a + (x.tuition || 0), 0) + (s.materials || []).reduce((a, x) => a + (x.amount || 0), 0);
+  // 이 달 청구 금액: ① 직접 수정한 금액 → ② 그 달 주기 이력의 실제 청구액 → ③ 현재 과목 합계
+  const getAmount = (s) => {
+    const p = s.payments && s.payments[yearMonth];
+    if (p && p.amountOverride != null && p.amountOverride !== '') return Number(p.amountOverride) || 0;
+    const hists = (s.cycleHistory || []).filter(h => h.yearMonth === yearMonth && typeof h.totalAmount === 'number');
+    if (hists.length > 0) return hists[hists.length - 1].totalAmount;
+    return (s.subjects || []).reduce((a, x) => a + (x.tuition || 0), 0) + (s.materials || []).reduce((a, x) => a + (x.amount || 0), 0);
+  };
+  // 이 달 금액 직접 수정 (안 듣는 과목 제외 등)
+  const editAmount = (s) => {
+    const cur = getAmount(s);
+    const v = prompt(
+      `${s.name} 학생의 ${parseInt(yearMonth.slice(5))}월 청구 금액을 입력하세요.\n` +
+      `(이번 달 안 듣는 과목이 있으면 그만큼 뺀 금액으로)\n\n` +
+      `숫자만 입력 · 비우고 [확인]하면 자동 계산으로 돌아갑니다.`,
+      String(cur)
+    );
+    if (v === null) return;
+    const digits = v.replace(/[^0-9]/g, '');
+    updatePayment(s.id, { amountOverride: digits === '' ? '' : Number(digits) });
+  };
 
   const updatePayment = (studentId, patch) => {
     setStudents(students.map(s => {
@@ -6609,7 +6630,7 @@ function PaymentTab({ students, setStudents, privacyMode, settings }) {
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
   };
   // 실제 내용이 있는 납부 기록인지 (실수 클릭으로 생긴 빈 기록은 무시)
-  const isRealPayment = (p) => !!(p && (p.status === 'paid' || p.status === 'refunded' || p.paidDate || p.dueDate || p.method || (p.note && p.note.trim())));
+  const isRealPayment = (p) => !!(p && (p.status === 'paid' || p.status === 'refunded' || p.paidDate || p.dueDate || p.method || (p.items && p.items.length > 0) || (p.amountOverride != null && p.amountOverride !== '') || (p.note && p.note.trim())));
   // 그 달 전체가 휴원(쉼) 기간에 포함되는지 — 과거 휴원 기록 + 현재 휴원 모두 확인
   const isMonthInRestGap = (s, ym) => {
     const gaps = [...(s.suspendHistory || [])];
@@ -6746,14 +6767,31 @@ function PaymentTab({ students, setStudents, privacyMode, settings }) {
               const amount = getAmount(s);
               const st = p.status || 'pending';
               const isPaid = st === 'paid';
+              const items = p.items || [];
+              const itemsSum = items.reduce((a, it) => a + (Number(it.amount) || 0), 0);
               return (
-                <tr key={s.id} className={`border-b transition hover:bg-indigo-50 ${isPaid ? 'bg-green-50/40' : st === 'refunded' ? 'bg-purple-50/40' : ''} ${(s.isWithdrawn || s.isSuspended) ? 'opacity-70' : ''}`}>
+                <React.Fragment key={s.id}>
+                <tr className={`border-b transition hover:bg-indigo-50 ${isPaid ? 'bg-green-50/40' : st === 'refunded' ? 'bg-purple-50/40' : ''} ${(s.isWithdrawn || s.isSuspended) ? 'opacity-70' : ''}`}>
                   <td className="px-3 py-2 font-semibold text-gray-800">
                     {s.name}
                     {s.isWithdrawn && <span className="ml-1.5 text-[9px] px-1.5 py-0.5 bg-rose-100 text-rose-700 rounded font-semibold">퇴원</span>}
                     {s.isSuspended && !s.isWithdrawn && <span className="ml-1.5 text-[9px] px-1.5 py-0.5 bg-amber-100 text-amber-700 rounded font-semibold">휴원</span>}
                   </td>
-                  <td className="px-3 py-2 text-right font-medium text-gray-700">{fmtWon(amount)}</td>
+                  <td className="px-3 py-2 text-right font-medium text-gray-700">
+                    <button
+                      onClick={() => editAmount(s)}
+                      className="hover:bg-indigo-50 hover:text-indigo-700 rounded px-1.5 py-0.5 transition"
+                      title="클릭하면 이 달 청구 금액을 직접 수정할 수 있어요 (안 듣는 과목 제외 등)"
+                    >
+                      {fmtWon(amount)}
+                      {p.amountOverride != null && p.amountOverride !== '' && <span className="ml-1 text-[9px] text-indigo-500 font-bold">✏️수정됨</span>}
+                    </button>
+                    {items.length > 0 && (
+                      <div className={`text-[10px] font-semibold ${itemsSum >= amount ? 'text-green-600' : 'text-indigo-600'}`}>
+                        💳 {items.length}건 · 받음 {fmtWon(itemsSum)}
+                      </div>
+                    )}
+                  </td>
                   <td className="px-3 py-2 text-center">
                     <div className="flex items-center gap-1 justify-center">
                       <input
@@ -6804,6 +6842,11 @@ function PaymentTab({ students, setStudents, privacyMode, settings }) {
                   </td>
                   <td className="px-3 py-2 text-center">
                     <div className="flex gap-1 justify-center">
+                      <button
+                        onClick={() => setExpandedId(expandedId === s.id ? null : s.id)}
+                        className={`px-2 py-1 text-xs rounded font-semibold ${items.length > 0 || expandedId === s.id ? 'bg-indigo-600 text-white' : 'bg-indigo-100 hover:bg-indigo-200 text-indigo-700'}`}
+                        title="분할·항목별 결제 내역 (교습비/교재비 나누기, 카드 여러 장)"
+                      >💳</button>
                       <button onClick={() => setHistoryStudent(s)} className="px-2 py-1 text-xs bg-indigo-100 hover:bg-indigo-200 text-indigo-700 rounded font-semibold" title="이 학생의 전체 납부 이력 보기">📜</button>
                       {!isPaid && (
                         <button
@@ -6815,6 +6858,56 @@ function PaymentTab({ students, setStudents, privacyMode, settings }) {
                     </div>
                   </td>
                 </tr>
+                {expandedId === s.id && (
+                  <tr className="border-b bg-indigo-50/60">
+                    <td colSpan="8" className="px-4 py-3">
+                      <div className="flex items-center gap-2 mb-2 flex-wrap">
+                        <span className="text-xs font-bold text-indigo-900">💳 {s.name} · {yearMonth} 분할·항목별 결제 내역</span>
+                        <button
+                          onClick={() => {
+                            const t = (s.subjects || []).reduce((a, x) => a + (x.tuition || 0), 0);
+                            const m = (s.materials || []).reduce((a, x) => a + (x.amount || 0), 0);
+                            const seed = [{ id: uid(), label: '교습비', amount: t, method: '', paidDate: '', note: '' }];
+                            if (m > 0) seed.push({ id: uid(), label: '교재비', amount: m, method: '', paidDate: '', note: '' });
+                            updatePayment(s.id, { items: [...items, ...seed] });
+                          }}
+                          className="px-2 py-1 bg-indigo-600 hover:bg-indigo-700 text-white text-[11px] rounded font-semibold"
+                        >🧮 교습비·교재비로 나누기</button>
+                        <button
+                          onClick={() => updatePayment(s.id, { items: [...items, { id: uid(), label: '', amount: 0, method: '', paidDate: '', note: '' }] })}
+                          className="px-2 py-1 bg-white border border-indigo-300 text-indigo-700 text-[11px] rounded font-semibold"
+                        >+ 항목 추가</button>
+                        <span className="ml-auto text-[11px] text-gray-600">
+                          받은 합계 <strong className={itemsSum >= amount ? 'text-green-700' : 'text-indigo-700'}>{fmtWon(itemsSum)}</strong> / 청구 {fmtWon(amount)}
+                        </span>
+                      </div>
+                      {items.length === 0 ? (
+                        <div className="text-[11px] text-gray-400">아직 항목이 없어요. <strong>[🧮 교습비·교재비로 나누기]</strong>를 누르면 금액이 자동으로 채워지고, 카드 여러 장으로 나눠 냈으면 <strong>[+ 항목 추가]</strong>로 장수만큼 만드세요.</div>
+                      ) : (
+                        <div className="space-y-1">
+                          {items.map((it) => {
+                            const upItem = (patch) => updatePayment(s.id, { items: items.map(x => x.id === it.id ? { ...x, ...patch } : x) });
+                            return (
+                              <div key={it.id} className="flex items-center gap-1.5 flex-wrap bg-white border rounded px-2 py-1">
+                                <input type="text" value={it.label || ''} onChange={(e) => upItem({ label: e.target.value })} placeholder="항목 (교습비/교재비)" className="w-28 px-1.5 py-1 border rounded text-xs" />
+                                <input type="number" value={it.amount} min="0" step="1000" onChange={(e) => upItem({ amount: parseInt(e.target.value) || 0 })} className="w-28 px-1.5 py-1 border rounded text-xs text-right" />
+                                <span className="text-[10px] text-gray-400">원</span>
+                                <select value={it.method || ''} onChange={(e) => upItem({ method: e.target.value })} className={`text-xs px-1 py-1 border rounded ${it.method ? 'text-gray-800' : 'text-gray-400'}`}>
+                                  <option value="">수단 —</option>
+                                  {PAYMENT_METHODS.map(m2 => <option key={m2} value={m2}>{m2}</option>)}
+                                </select>
+                                <input type="date" value={it.paidDate || ''} onChange={(e) => upItem({ paidDate: e.target.value })} className="text-xs px-1 py-1 border rounded" title="이 항목 결제일" />
+                                <input type="text" value={it.note || ''} onChange={(e) => upItem({ note: e.target.value })} placeholder="메모 (예: 하나카드)" className="flex-1 min-w-[100px] px-1.5 py-1 border rounded text-xs" />
+                                <button onClick={() => updatePayment(s.id, { items: items.filter(x => x.id !== it.id) })} className="text-rose-500 hover:bg-rose-50 rounded px-1.5">×</button>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </td>
+                  </tr>
+                )}
+                </React.Fragment>
               );
             })}
           </tbody>
