@@ -22,7 +22,6 @@
   <script src="https://unpkg.com/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/modern-screenshot@4.5.1/dist/index.umd.js"></script>
   <script src="https://unpkg.com/jszip@3.10.1/dist/jszip.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
   <script src="https://unpkg.com/papaparse@5.4.1/papaparse.min.js"></script>
@@ -96,16 +95,6 @@
 
 <script type="text/babel" data-presets="react">
 const { useState, useEffect, useRef, useMemo } = React;
-
-// ═══════════════════════════════════════════════════
-//  ☁️ 클라우드 동기화 (수파베이스) — 여러 명이 같은 데이터를 공유
-//  anon 키는 공개용 키이며, 실제 데이터 접근은 로그인(RLS)으로 보호됩니다
-// ═══════════════════════════════════════════════════
-const SUPABASE_URL = 'https://zljoucthhilpkfkvrydn.supabase.co';
-const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inpsam91Y3RoaGlscGtma3ZyeWRuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ5NzQyODksImV4cCI6MjEwMDU1MDI4OX0.q68AVaxt945zXW7kZ7G2Y8W6g5KD7X-tIbuqylzdZeY';
-const sb = (window.supabase && window.supabase.createClient)
-  ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
-  : null;
 
 // ═══════════════════════════════════════════════════
 //  1. 유틸리티
@@ -213,74 +202,6 @@ const getPreviousCycleSessions = (beforeDate, classDays, sessionsCount, holidayS
   // 정순(과거→최근)으로 회차 번호 부여
   sessions.forEach((s, i) => { s.sessionNum = i + 1; });
   return sessions;
-};
-
-// ─── 일정 변경(수정/추가/삭제)을 자동 회차에 적용해 최종 회차 목록 산출 ───
-// 날짜(originalDate) 기준으로 매칭 — 회차 번호 기준 매칭은 휴일·시작일이 바뀌면 어긋나므로 사용하지 않음
-// sessions: 자동 계산 회차 [{date, sessionNum}]
-// opts: { cycleStartStr, cycleEndStr(원래 날짜 매칭 범위), addFrom, addTo(추가 수업 표시 범위, ''=무제한) }
-// 반환: { finals: [{dateStr, num, autoNum, originalDate, adjusted, isExtra, note, srcIdx}], deleted: [삭제 레코드+srcIdx] }
-const applyScheduleAdjustments = (sessions, allAdj, opts) => {
-  const list = (allAdj || []).map((a, srcIdx) => ({ ...a, srcIdx }));
-  const inRange = (d, from, to) => !!d && d >= from && (!to || d <= to);
-  const modifies = list.filter(a => { const t = a.type || 'modify'; return t === 'modify' && inRange(a.originalDate, opts.cycleStartStr, opts.cycleEndStr); });
-  const deletes = list.filter(a => a.type === 'delete' && inRange(a.originalDate, opts.cycleStartStr, opts.cycleEndStr));
-  const adds = list.filter(a => a.type === 'add' && inRange(a.date, opts.addFrom, opts.addTo));
-
-  const sessionKeys = new Set(sessions.map(s => formatDateStr(s.date)));
-  const modifyMap = new Map(); // originalDate → 수정 레코드
-  const rescued = [];          // 자동 회차에 없는 날짜의 '수정' → 새 날짜의 추가 수업으로 살려서 반영 (조용히 사라지는 것 방지)
-  modifies.forEach(a => {
-    if (sessionKeys.has(a.originalDate)) modifyMap.set(a.originalDate, a);
-    else if (inRange(a.newDate, opts.addFrom, opts.addTo)) rescued.push(a);
-  });
-  const deleteSet = new Set(deletes.map(a => a.originalDate));
-
-  const finals = [];
-  sessions.forEach(s => {
-    const k = formatDateStr(s.date);
-    if (deleteSet.has(k)) return;
-    const adj = modifyMap.get(k);
-    finals.push({
-      dateStr: adj ? adj.newDate : k,
-      autoNum: s.sessionNum,
-      originalDate: k,
-      adjusted: !!adj && adj.newDate !== k, // 날짜 그대로면 사유(메모)만 담긴 레코드 → 이동 표시 안 함
-      isExtra: false,
-      note: (adj && adj.note) || '',
-      srcIdx: adj ? adj.srcIdx : -1,
-    });
-  });
-  adds.forEach(a => finals.push({ dateStr: a.date, autoNum: 0, originalDate: null, adjusted: false, isExtra: true, note: a.note || '', srcIdx: a.srcIdx }));
-  rescued.forEach(a => finals.push({ dateStr: a.newDate, autoNum: 0, originalDate: null, adjusted: false, isExtra: true, note: a.note || '일정 변경', srcIdx: a.srcIdx }));
-
-  // 휴원일과 겹친 회차(이동·추가로 고정된 날짜에 나중에 휴원일이 등록된 경우)는
-  // 다음 수업 요일(휴원일 제외)로 자동으로 밀어준다
-  if (opts.holidaySet && opts.holidaySet.size > 0) {
-    const skipSet2 = new Set(opts.skipHolidays || []);
-    const isHol = (ds) => opts.holidaySet.has(ds) && !skipSet2.has(ds);
-    finals.forEach(f => {
-      if (!isHol(f.dateStr)) return;
-      let d = parseDate(f.dateStr);
-      let iter = 0;
-      while (iter < 60) {
-        d = addDays(d, 1);
-        iter++;
-        const ds = formatDateStr(d);
-        const dow = d.getDay();
-        const dayOk = !opts.classDays || opts.classDays.length === 0 || opts.classDays.includes(dow);
-        if (!isHol(ds) && dayOk) {
-          f.dateStr = ds;
-          f.holidayShifted = true;
-          break;
-        }
-      }
-    });
-  }
-
-  if (adds.length + rescued.length > 0) finals.sort((x, y) => x.dateStr.localeCompare(y.dateStr));
-  finals.forEach((f, i) => { f.num = i + 1; });
-  return { finals, deleted: deletes };
 };
 
 // 과목별 색상 자동 매칭
@@ -476,12 +397,6 @@ function buildSessionMap(student, settings, mode) {
     let sessions = [];
     let cycleStart = null, cycleEnd = null;
 
-    // 지난 주기 전용 요일·회차 (설정 안 했으면 이번 주기와 동일)
-    const prevDays = (sub.prevClassDays && sub.prevClassDays.length > 0) ? sub.prevClassDays : sub.classDays;
-    const prevTotal = sub.prevTotalSessions || sub.totalSessions;
-    const usedDays = mode === 'plan' ? sub.classDays : prevDays;
-    const usedTotal = mode === 'plan' ? sub.totalSessions : prevTotal;
-
     if (mode === 'plan') {
       // 계획 = 이번 청구 주기 (입력된 시작일부터 정방향)
       sessions = getClassSessions(newCycleStart, sub.classDays, sub.totalSessions, holidaySet, sub.skipHolidays);
@@ -490,62 +405,12 @@ function buildSessionMap(student, settings, mode) {
         cycleEnd = sessions[sessions.length - 1].date;
       }
     } else {
-      // 진행 = 지난 주기 (신규 등록이면 비움)
+      // 진행 = 지난 주기 (신규 등록이면 비움, 아니면 역산)
       if (sub.isNew) {
         subjectData.push({ ...sub, index: subIdx, sessions: [], startDate: null, endDate: null, isNew: true });
         return;
       }
-
-      // 1) "다음 주기로 이동" 때 저장된 실제 일정 기록이 있으면 그걸 그대로 표시
-      //    (📆 월별 일정의 ✏️ 수정 모드에서 고친 내용도 즉시 반영됨)
-      const hists = student.cycleHistory || [];
-      let histSubj = null;
-      for (let i = hists.length - 1; i >= 0; i--) {
-        const hs = (hists[i].subjects || []).find(x => x.name === sub.name && (x.schedule || []).length > 0);
-        if (hs) { histSubj = hs; break; }
-      }
-      if (histSubj) {
-        const histAbsent = new Set([
-          ...(histSubj.absences || []).map(a => a.date),
-          ...((student.absences || []).filter(a => a.subjectId === sub.id).map(a => a.date)),
-        ]);
-        histSubj.schedule.forEach(s => {
-          if (!s.date) return;
-          if (!sessionMap.has(s.date)) sessionMap.set(s.date, []);
-          sessionMap.get(s.date).push({
-            subjectIndex: subIdx, subjectName: sub.name, sessionNum: s.num,
-            absent: histAbsent.has(s.date), adjusted: !!s.adjusted, originalDate: null,
-            isExtra: !!s.isExtra, note: s.note || '',
-          });
-        });
-        // 보강: 기록 속 보강 + 지금 새로 입력한 보강(다음 주기 시작 전 날짜) 합쳐서 표시
-        const histMakeups = [...(histSubj.makeups || [])];
-        const planStartStr = formatDateStr(newCycleStart);
-        (sub.makeups || []).forEach(m => {
-          if (!m.date) return;
-          if (m.date < planStartStr && !histMakeups.some(x => x.date === m.date)) histMakeups.push(m);
-        });
-        histMakeups.forEach(m => {
-          if (!m.date) return;
-          if (!sessionMap.has(m.date)) sessionMap.set(m.date, []);
-          sessionMap.get(m.date).push({ subjectIndex: subIdx, subjectName: sub.name, sessionNum: 0, absent: false, isMakeup: true, makeupNote: m.note || '' });
-        });
-        const ds = histSubj.schedule.map(s => s.date).filter(Boolean).sort();
-        subjectData.push({
-          ...sub, index: subIdx,
-          classDays: prevDays,
-          totalSessions: histSubj.schedule.length,
-          sessions: histSubj.schedule.map(s => ({ date: parseDate(s.date), sessionNum: s.num })),
-          startDate: parseDate(ds[0]),
-          endDate: parseDate(ds[ds.length - 1]),
-          absentCount: histSubj.schedule.filter(s => histAbsent.has(s.date)).length,
-          makeupCount: histMakeups.length,
-        });
-        return;
-      }
-
-      // 2) 기록이 없으면 요일 패턴으로 역산 (지난 주기 전용 요일·회차 사용)
-      sessions = getPreviousCycleSessions(newCycleStart, prevDays, prevTotal, holidaySet, sub.skipHolidays);
+      sessions = getPreviousCycleSessions(newCycleStart, sub.classDays, sub.totalSessions, holidaySet, sub.skipHolidays);
       if (sessions.length > 0) {
         cycleStart = sessions[0].date;
         cycleEnd = sessions[sessions.length - 1].date;
@@ -564,58 +429,124 @@ function buildSessionMap(student, settings, mode) {
     // 주기 범위를 문자열로 안전하게 비교 (시간 포함 비교 회피)
     const cycleStartStr = cycleStart ? formatDateStr(cycleStart) : '';
     const cycleEndStr = cycleEnd ? formatDateStr(cycleEnd) : '';
-    const newCycleStartStr = formatDateStr(newCycleStart);
-
-    // 회차별 일정 변경 적용 (수정/추가/삭제 — 날짜 기준 매칭, 공용 함수)
-    // 추가 수업 표시 범위: 계획=주기 시작일 이후 전부, 진행=지난 주기 시작 ~ 계획 시작 전날
-    const addFrom = mode === 'plan' ? newCycleStartStr : cycleStartStr;
-    const addTo = mode === 'plan' ? '' : formatDateStr(addDays(newCycleStart, -1));
-    const { finals } = applyScheduleAdjustments(sessions, sub.adjustments, { cycleStartStr, cycleEndStr, addFrom, addTo, holidaySet, classDays: usedDays, skipHolidays: sub.skipHolidays });
-
-    finals.forEach(f => {
-      if (!sessionMap.has(f.dateStr)) sessionMap.set(f.dateStr, []);
-      sessionMap.get(f.dateStr).push({
-        subjectIndex: subIdx,
-        subjectName: sub.name,
-        sessionNum: f.num,
-        absent: absentDateSet.has(f.dateStr) || (!!f.originalDate && absentDateSet.has(f.originalDate)),
-        adjusted: f.adjusted || !!f.holidayShifted,
-        originalDate: (f.adjusted || f.holidayShifted) ? f.originalDate : null,
-        isExtra: f.isExtra,
-        note: f.note,
-      });
+    
+    // 회차별 일정 변경: type별로 처리 (수정/추가/삭제)
+    const allAdj = sub.adjustments || [];
+    // 수정 (이번 주기에 속한 원래 날짜만)
+    const modifyAdj = allAdj.filter(a => {
+      const t = a.type || 'modify';
+      if (t !== 'modify') return false;
+      if (!a.originalDate) return false;
+      return a.originalDate >= cycleStartStr && a.originalDate <= cycleEndStr;
+    });
+    const adjustMap = new Map();
+    modifyAdj.forEach(a => adjustMap.set(a.sessionNum, a.newDate));
+    
+    // 삭제 (이번 주기에 속한 원래 날짜만)
+    const deleteAdj = allAdj.filter(a => {
+      if (a.type !== 'delete') return false;
+      if (!a.originalDate) return false;
+      return a.originalDate >= cycleStartStr && a.originalDate <= cycleEndStr;
+    });
+    const deleteSet = new Set(deleteAdj.map(a => a.sessionNum));
+    
+    // 추가 (이번 주기 범위에 속한 날짜만)
+    const addAdj = allAdj.filter(a => {
+      if (a.type !== 'add') return false;
+      if (!a.date) return false;
+      return a.date >= cycleStartStr && a.date <= cycleEndStr;
     });
 
-    // 최종 일정 범위 (이동·추가·삭제 반영된 실제 시작~끝)
-    const finalDateStrs = finals.map(f => f.dateStr).sort();
-    const finalStartStr = finalDateStrs[0] || cycleStartStr;
-    const finalEndStr = finalDateStrs[finalDateStrs.length - 1] || cycleEndStr;
+    // 자동 계산된 회차 처리 (삭제된 회차 제외, 수정된 회차는 새 날짜)
+    let displaySessionNum = 0; // 표시용 회차 번호 (삭제된 회차는 건너뜀)
+    sessions.forEach(s => {
+      if (deleteSet.has(s.sessionNum)) return; // 삭제된 회차는 건너뜀
+      displaySessionNum++;
+      
+      // 조정된 회차면 새 날짜로 표시
+      const adjusted = adjustMap.get(s.sessionNum);
+      const finalDateKey = adjusted || formatDateStr(s.date);
+      const originalKey = formatDateStr(s.date);
+      
+      if (!sessionMap.has(finalDateKey)) sessionMap.set(finalDateKey, []);
+      sessionMap.get(finalDateKey).push({
+        subjectIndex: subIdx,
+        subjectName: sub.name,
+        sessionNum: displaySessionNum, // 표시 번호 (삭제 반영)
+        absent: absentDateSet.has(originalKey) || absentDateSet.has(finalDateKey),
+        adjusted: !!adjusted,
+        originalDate: adjusted ? originalKey : null,
+      });
+    });
+    
+    // 추가된 회차 처리 (정렬을 위해 모든 회차 모아서 다시 번호 매기기)
+    if (addAdj.length > 0) {
+      // 기존 회차와 추가 회차를 날짜 순으로 정렬
+      const allDateKeys = [];
+      sessionMap.forEach((items, dateKey) => {
+        items.forEach(it => {
+          if (it.subjectIndex === subIdx) {
+            allDateKeys.push({ dateKey, item: it, isAdd: false });
+          }
+        });
+      });
+      addAdj.forEach(a => {
+        allDateKeys.push({
+          dateKey: a.date,
+          item: {
+            subjectIndex: subIdx,
+            subjectName: sub.name,
+            sessionNum: 0, // 임시
+            absent: absentDateSet.has(a.date),
+            adjusted: false,
+            isExtra: true,
+            note: a.note,
+          },
+          isAdd: true,
+        });
+      });
+      // 날짜순 정렬 후 번호 재부여
+      allDateKeys.sort((a, b) => a.dateKey.localeCompare(b.dateKey));
+      // 기존 sessionMap에서 이 과목 항목 모두 제거
+      sessionMap.forEach((items, dateKey) => {
+        const filtered = items.filter(it => it.subjectIndex !== subIdx);
+        if (filtered.length === 0) sessionMap.delete(dateKey);
+        else sessionMap.set(dateKey, filtered);
+      });
+      // 새 번호로 다시 채워넣기
+      allDateKeys.forEach((entry, i) => {
+        entry.item.sessionNum = i + 1;
+        if (!sessionMap.has(entry.dateKey)) sessionMap.set(entry.dateKey, []);
+        sessionMap.get(entry.dateKey).push(entry.item);
+      });
+    }
     
     // 보강 일정 추가: 진행/계획 어디에도 안 들어가는 보강은
     // 가장 가까운 주기(결석 회차가 속한 주기)에 함께 표시
     const allMakeups = sub.makeups || [];
     
     const makeups = allMakeups.filter(m => {
-      if (!m.date || !finalStartStr || !finalEndStr) return false;
-
-      // 1. 이번 주기 범위 안 (이동 반영된 최종 범위) → 표시
-      if (m.date >= finalStartStr && m.date <= finalEndStr) return true;
-
-      // 2. 진행 캘린더(mode==='current')인 경우,
-      //    진행 끝 ~ 다음 주기 시작일(=newCycleStart) 사이의 보강도 표시
+      if (!m.date || !cycleStartStr || !cycleEndStr) return false;
+      
+      // 1. 이번 주기 범위 안 → 표시
+      if (m.date >= cycleStartStr && m.date <= cycleEndStr) return true;
+      
+      // 2. 진행 캘린더(mode==='current')인 경우, 
+      //    cycleEnd ~ 다음 주기 시작일(=newCycleStart) 사이의 보강도 표시
       //    (예: 진행 끝 4/3 ~ 계획 시작 4/8 사이의 4/4 보강)
       if (mode === 'current') {
-        if (m.date > finalEndStr && m.date < newCycleStartStr) return true;
+        const nextCycleStartStr = formatDateStr(newCycleStart);
+        if (m.date > cycleEndStr && m.date < nextCycleStartStr) return true;
       }
-
+      
       return false;
     });
-
+    
     // 🔍 디버깅: 보강이 있는데 모두 필터링되어 사라지면 콘솔 출력
     if (allMakeups.length > 0 && makeups.length === 0) {
       console.log(`[보강 필터링 제외] 과목: ${sub.name}, 모드: ${mode}`);
-      console.log(`  주기 범위: ${finalStartStr} ~ ${finalEndStr}`);
-      console.log(`  다음 주기 시작: ${newCycleStartStr}`);
+      console.log(`  주기 범위: ${cycleStartStr} ~ ${cycleEndStr}`);
+      console.log(`  다음 주기 시작: ${formatDateStr(newCycleStart)}`);
       console.log(`  등록된 보강:`, allMakeups.map(m => m.date));
     }
     
@@ -635,12 +566,13 @@ function buildSessionMap(student, settings, mode) {
     subjectData.push({
       ...sub,
       index: subIdx,
-      classDays: usedDays, // 진행 캘린더는 지난 주기 요일 기준으로 표시
-      totalSessions: usedTotal,
-      sessions: finals.map(f => ({ date: parseDate(f.dateStr), sessionNum: f.num })),
-      startDate: parseDate(finalStartStr),
-      endDate: parseDate(finalEndStr),
-      absentCount: absencesForSubject.filter(a => a.date >= finalStartStr && a.date <= finalEndStr).length,
+      sessions,
+      startDate: cycleStart,
+      endDate: cycleEnd,
+      absentCount: absencesForSubject.filter(a => {
+        const d = parseDate(a.date);
+        return d && d >= cycleStart && d <= cycleEnd;
+      }).length,
       makeupCount: makeups.length, // 이번 주기에 표시되는 보강 수
     });
   });
@@ -819,63 +751,49 @@ function CalendarView({ student, settings, mode, calendarRef }) {
                         {holiday}
                       </div>
                     )}
-                    {isCurrentMonth && sessions.map((s, si) => {
+                    {isCurrentMonth && !holiday && sessions.map((s, si) => {
                       const color = subjectColors.find(sc => sc.index === s.subjectIndex)?.color;
                       if (!color) return null;
-
+                      
                       // 보강 표시
                       if (s.isMakeup) {
                         return (
-                          <React.Fragment key={si}>
-                            <div style={{
-                              fontSize: '10px',
-                              color: '#0891b2',
-                              fontWeight: 800,
-                              lineHeight: 1.2,
-                              marginTop: '2px',
-                              background: '#cffafe',
-                              padding: '1px 4px',
-                              borderRadius: '3px',
-                              border: '1px solid #67e8f9',
-                              letterSpacing: '-0.02em',
-                              textAlign: 'center',
-                            }} title={s.makeupNote || '보강'}>
-                              🔵{s.subjectName}보강
-                            </div>
-                            {s.makeupNote && (
-                              <div style={{ fontSize: '8px', color: '#0e7490', lineHeight: 1.15, marginTop: '1px', textAlign: 'center', wordBreak: 'keep-all' }}>
-                                {s.makeupNote}
-                              </div>
-                            )}
-                          </React.Fragment>
-                        );
-                      }
-
-                      return (
-                        <React.Fragment key={si}>
-                          <div style={{
+                          <div key={si} style={{
                             fontSize: '10px',
-                            color: s.absent ? '#dc2626' : color.badge,
+                            color: '#0891b2',
                             fontWeight: 800,
                             lineHeight: 1.2,
                             marginTop: '2px',
-                            textDecoration: s.absent ? 'line-through' : 'none',
-                            textShadow: '0 0 1px rgba(255,255,255,0.5)',
+                            background: '#cffafe',
+                            padding: '1px 4px',
+                            borderRadius: '3px',
+                            border: '1px solid #67e8f9',
                             letterSpacing: '-0.02em',
                             textAlign: 'center',
-                            background: s.adjusted ? '#fef3c7' : 'transparent',
-                            padding: s.adjusted ? '0 3px' : '0',
-                            borderRadius: s.adjusted ? '3px' : '0',
-                          }} title={s.adjusted ? `원래 ${s.originalDate}에서 변경됨` : ''}>
-                            {s.adjusted && '↪'}{s.subjectName}{s.sessionNum}
-                            {s.absent && <span style={{ marginLeft: '2px', color: '#dc2626', textDecoration: 'none' }}>결</span>}
+                          }} title={s.makeupNote || '보강'}>
+                            🔵{s.subjectName}보강
                           </div>
-                          {s.note && (
-                            <div style={{ fontSize: '8px', color: '#6b7280', lineHeight: 1.15, marginTop: '1px', textAlign: 'center', wordBreak: 'keep-all' }}>
-                              {s.note}
-                            </div>
-                          )}
-                        </React.Fragment>
+                        );
+                      }
+                      
+                      return (
+                        <div key={si} style={{
+                          fontSize: '10px',
+                          color: s.absent ? '#dc2626' : color.badge,
+                          fontWeight: 800,
+                          lineHeight: 1.2,
+                          marginTop: '2px',
+                          textDecoration: s.absent ? 'line-through' : 'none',
+                          textShadow: '0 0 1px rgba(255,255,255,0.5)',
+                          letterSpacing: '-0.02em',
+                          textAlign: 'center',
+                          background: s.adjusted ? '#fef3c7' : 'transparent',
+                          padding: s.adjusted ? '0 3px' : '0',
+                          borderRadius: s.adjusted ? '3px' : '0',
+                        }} title={s.adjusted ? `원래 ${s.originalDate}에서 변경됨` : ''}>
+                          {s.adjusted && '↪'}{s.subjectName}{s.sessionNum}
+                          {s.absent && <span style={{ marginLeft: '2px', color: '#dc2626', textDecoration: 'none' }}>결</span>}
+                        </div>
                       );
                     })}
                   </div>
@@ -897,23 +815,16 @@ function CalendarView({ student, settings, mode, calendarRef }) {
                 {fmtKDate(s.startDate)} ~ {fmtKDate(s.endDate)}
               </span>
             </div>
-            {(() => {
-              // 직접 쓴 요약 문구가 있으면 그대로 표시 (학생 편집 > 캘린더 요약 문구)
-              const ov = ((mode === 'current' ? s.summaryTextCurrent : s.summaryTextPlan) || '').trim();
-              if (ov) return <div style={{ fontWeight: 600, color: '#1a2344' }}>{ov}</div>;
-              return (
-                <div style={{ fontWeight: 600, color: '#1a2344' }}>
-                  총 {s.sessions.length}회차
-                  {mode === 'current' && s.absentCount > 0 && (
-                    <span style={{ color: '#dc2626', marginLeft: '6px' }}>(결석 {s.absentCount}회)</span>
-                  )}
-                  {s.makeupCount > 0 && (
-                    <span style={{ color: '#0891b2', marginLeft: '6px' }}>(보강 {s.makeupCount}회)</span>
-                  )}
-                  · 주 {s.classDays.length}회
-                </div>
-              );
-            })()}
+            <div style={{ fontWeight: 600, color: '#1a2344' }}>
+              총 {s.sessions.length}회차
+              {mode === 'current' && s.absentCount > 0 && (
+                <span style={{ color: '#dc2626', marginLeft: '6px' }}>(결석 {s.absentCount}회)</span>
+              )}
+              {s.makeupCount > 0 && (
+                <span style={{ color: '#0891b2', marginLeft: '6px' }}>(보강 {s.makeupCount}회)</span>
+              )}
+              · 주 {s.classDays.length}회
+            </div>
           </div>
         ))}
       </div>
@@ -982,13 +893,7 @@ function InvoiceView({ student, settings, invoiceRef }) {
     const holidaySet = new Set((settings.holidays || []).map(h => h.date));
     const endDates = student.subjects.map(s => {
       const sessions = getClassSessions(parseDate(s.startDate), s.classDays, s.totalSessions, holidaySet, s.skipHolidays);
-      if (sessions.length === 0) return null;
-      // 일정 변경(이동·추가·삭제) 반영된 실제 마지막 수업일
-      const csStr = formatDateStr(sessions[0].date);
-      const ceStr = formatDateStr(sessions[sessions.length - 1].date);
-      const { finals } = applyScheduleAdjustments(sessions, s.adjustments, { cycleStartStr: csStr, cycleEndStr: ceStr, addFrom: s.startDate, addTo: '', holidaySet, classDays: s.classDays, skipHolidays: s.skipHolidays });
-      const lastStr = finals.length > 0 ? finals.map(f => f.dateStr).sort().pop() : ceStr;
-      return parseDate(lastStr);
+      return sessions.length > 0 ? sessions[sessions.length - 1].date : null;
     }).filter(Boolean);
     if (endDates.length === 0) return fmtKYearMonth(earliest);
     const latest = new Date(Math.max(...endDates.map(d => d.getTime())));
@@ -1074,61 +979,26 @@ function InvoiceView({ student, settings, invoiceRef }) {
         </div>
         <div className="border-t border-gray-200 mb-3"></div>
         <div className="space-y-2">
-          {(student.subjects || []).map((sub) => {
-            // 실제 1회차 날짜 + 변경 내역(사유): 요일 패턴 + 일정 변경(이동·추가·삭제·휴원일 자동 이동) 반영
-            const invHolidaySet = new Set((settings.holidays || []).map(h => h.date));
-            let firstDate = parseDate(sub.startDate);
-            const changeLines = [];
-            const fmtD2 = (ds) => `${fmtKDate(parseDate(ds))} (${DAY_NAMES_KO[parseDate(ds).getDay()]})`;
-            if (sub.startDate && sub.classDays && sub.classDays.length > 0) {
-              const sessions = getClassSessions(parseDate(sub.startDate), sub.classDays, sub.totalSessions, invHolidaySet, sub.skipHolidays);
-              if (sessions.length > 0) {
-                const cs = formatDateStr(sessions[0].date);
-                const ce = formatDateStr(sessions[sessions.length - 1].date);
-                const { finals, deleted } = applyScheduleAdjustments(sessions, sub.adjustments, { cycleStartStr: cs, cycleEndStr: ce, addFrom: sub.startDate, addTo: '', holidaySet: invHolidaySet, classDays: sub.classDays, skipHolidays: sub.skipHolidays });
-                if (finals.length > 0) firstDate = parseDate(finals.map(f => f.dateStr).sort()[0]);
-                finals.forEach(f => {
-                  if (f.adjusted || f.holidayShifted) changeLines.push({ d: f.dateStr, text: `↪ ${f.num}회차 → ${fmtD2(f.dateStr)}${f.holidayShifted ? ' · 휴원일 자동 이동' : ''}${f.note ? ' · ' + f.note : ''}` });
-                  else if (f.isExtra) changeLines.push({ d: f.dateStr, text: `➕ ${fmtD2(f.dateStr)} 수업 추가${f.note ? ' · ' + f.note : ''}` });
-                  else if (f.note) changeLines.push({ d: f.dateStr, text: `💬 ${f.num}회차 ${fmtD2(f.dateStr)} · ${f.note}` });
-                });
-                (deleted || []).forEach(dl => {
-                  if (dl.originalDate) changeLines.push({ d: dl.originalDate, text: `— ${fmtD2(dl.originalDate)} 수업 없음${dl.note ? ' · ' + dl.note : ''}` });
-                });
-                (sub.makeups || []).forEach(m => {
-                  if (m.date) changeLines.push({ d: m.date, text: `🔵 ${fmtD2(m.date)} 보강${m.note ? ' · ' + m.note : ''}` });
-                });
-                changeLines.sort((a, b) => a.d.localeCompare(b.d));
-              }
-            }
-            return (
-              <div key={sub.id} className="py-1.5 px-2 rounded" style={{ background: '#f7f5f0' }}>
-                <div className="flex items-center gap-3">
-                  <span
-                    className={`${getChipClass(sub.name)} text-xs font-semibold rounded-full min-w-[48px]`}
-                    style={{
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      padding: '4px 12px',
-                      lineHeight: 1.4,
-                    }}
-                  >
-                    {sub.name}
-                  </span>
-                  <span className="text-sm text-gray-700 flex-1">
-                    시작 <span className="font-bold">{fmtKDate(firstDate)}</span> 1회차
-                  </span>
-                  <span className="text-xs text-gray-500 font-medium">주 {(sub.classDays || []).length || sub.sessionsPerWeek}회</span>
-                </div>
-                {changeLines.length > 0 && (
-                  <div className="mt-1.5 pt-1.5 text-[11px] text-gray-500 leading-relaxed" style={{ borderTop: '1px dashed #d9d4c8' }}>
-                    {changeLines.map((c, i) => <div key={i}>{c.text}</div>)}
-                  </div>
-                )}
-              </div>
-            );
-          })}
+          {(student.subjects || []).map((sub) => (
+            <div key={sub.id} className="flex items-center gap-3 py-1.5 px-2 rounded" style={{ background: '#f7f5f0' }}>
+              <span
+                className={`${getChipClass(sub.name)} text-xs font-semibold rounded-full min-w-[48px]`}
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  padding: '4px 12px',
+                  lineHeight: 1.4,
+                }}
+              >
+                {sub.name}
+              </span>
+              <span className="text-sm text-gray-700 flex-1">
+                시작 <span className="font-bold">{fmtKDate(parseDate(sub.startDate))}</span> 1회차
+              </span>
+              <span className="text-xs text-gray-500 font-medium">주 {sub.sessionsPerWeek}회</span>
+            </div>
+          ))}
         </div>
       </div>
       )}
@@ -1289,57 +1159,28 @@ function InvoiceView({ student, settings, invoiceRef }) {
 //  4. 회차 일정 미리보기 / 휴일 관리 컴포넌트
 // ═══════════════════════════════════════════════════
 
-function SchedulePreview({ subject, holidays, cycleHistory }) {
+function SchedulePreview({ subject, holidays }) {
   const [expanded, setExpanded] = useState(false);
   if (!subject.startDate || !subject.classDays || subject.classDays.length === 0 || !subject.totalSessions) {
     return null;
   }
   const holidaySet = new Set((holidays || []).map(h => h.date));
-  const holOpts = { holidaySet, classDays: subject.classDays, skipHolidays: subject.skipHolidays };
-  const newStart = parseDate(subject.startDate);
-  const newStartStr = formatDateStr(newStart);
 
-  // 계획 주기 (이번 청구): 자동 계산 + 일정 변경(이동·추가·삭제·휴원일 자동 이동) 반영
-  const planSessions = getClassSessions(newStart, subject.classDays, subject.totalSessions, holidaySet, subject.skipHolidays);
-  let planFinals = [];
-  if (planSessions.length > 0) {
-    const cs = formatDateStr(planSessions[0].date);
-    const ce = formatDateStr(planSessions[planSessions.length - 1].date);
-    planFinals = applyScheduleAdjustments(planSessions, subject.adjustments, { cycleStartStr: cs, cycleEndStr: ce, addFrom: newStartStr, addTo: '', ...holOpts }).finals;
-  }
-  const planDateStrs = planFinals.map(f => f.dateStr).sort();
-  const planStart = planDateStrs.length > 0 ? parseDate(planDateStrs[0]) : null;
-  const planEnd = planDateStrs.length > 0 ? parseDate(planDateStrs[planDateStrs.length - 1]) : null;
+  // 계획 주기 (이번 청구): 입력한 시작일부터 정방향
+  const planSessions = getClassSessions(parseDate(subject.startDate), subject.classDays, subject.totalSessions, holidaySet, subject.skipHolidays);
+  const planStart = planSessions.length > 0 ? planSessions[0].date : null;
+  const planEnd = planSessions.length > 0 ? planSessions[planSessions.length - 1].date : null;
   const planComplete = planSessions.length === subject.totalSessions;
 
-  // 다음 주기 (등록 마감일 계산용) — 변경 반영된 실제 마지막 수업일 기준
+  // 다음 주기 (등록 마감일 계산용)
   const nextNextStart = planEnd ? getNextClassDay(planEnd, subject.classDays, holidaySet) : null;
 
-  // 진행 주기 (지난 주기): 저장된 실제 기록이 있으면 기록 기준, 없으면 역산 + 일정 변경 반영
-  const prevDays = (subject.prevClassDays && subject.prevClassDays.length > 0) ? subject.prevClassDays : subject.classDays;
-  const prevTotal = subject.prevTotalSessions || subject.totalSessions;
-  let histSubj = null;
-  {
-    const hists = cycleHistory || [];
-    for (let i = hists.length - 1; i >= 0; i--) {
-      const hs = (hists[i].subjects || []).find(x => x.name === subject.name && (x.schedule || []).length > 0);
-      if (hs) { histSubj = hs; break; }
-    }
-  }
-  let currentFinals = [];
-  if (histSubj) {
-    currentFinals = histSubj.schedule.filter(s => s.date).map(s => ({ dateStr: s.date, num: s.num, adjusted: !!s.adjusted, isExtra: !!s.isExtra, note: s.note || '' }));
-  } else if (!subject.isNew) {
-    const currentSessions = getPreviousCycleSessions(newStart, prevDays, prevTotal, holidaySet, subject.skipHolidays);
-    if (currentSessions.length > 0) {
-      const cs = formatDateStr(currentSessions[0].date);
-      const ce = formatDateStr(currentSessions[currentSessions.length - 1].date);
-      currentFinals = applyScheduleAdjustments(currentSessions, subject.adjustments, { cycleStartStr: cs, cycleEndStr: ce, addFrom: cs, addTo: formatDateStr(addDays(newStart, -1)), ...holOpts, classDays: prevDays }).finals;
-    }
-  }
-  const currentDateStrs = currentFinals.map(f => f.dateStr).sort();
-  const currentStart = currentDateStrs.length > 0 ? parseDate(currentDateStrs[0]) : null;
-  const currentEnd = currentDateStrs.length > 0 ? parseDate(currentDateStrs[currentDateStrs.length - 1]) : null;
+  // 진행 주기 (지난 주기): 신규 등록이 아니면 역산
+  const currentSessions = subject.isNew
+    ? []
+    : getPreviousCycleSessions(parseDate(subject.startDate), subject.classDays, subject.totalSessions, holidaySet, subject.skipHolidays);
+  const currentStart = currentSessions.length > 0 ? currentSessions[0].date : null;
+  const currentEnd = currentSessions.length > 0 ? currentSessions[currentSessions.length - 1].date : null;
 
   return (
     <div className="mt-3 p-3 bg-blue-50 border border-blue-200 rounded text-xs">
@@ -1357,9 +1198,6 @@ function SchedulePreview({ subject, holidays, cycleHistory }) {
       <div className="mb-2 p-2 bg-amber-50 border border-amber-200 rounded">
         <div className="flex items-center gap-2 mb-0.5">
           <span className="font-bold text-amber-700">📅 진행 캘린더 (지난 주기)</span>
-          {histSubj && (
-            <span className="text-[10px] text-amber-600 bg-amber-100 px-1.5 py-0.5 rounded">📜 저장된 기록 기준 · 아래 [📜 지난 일정 수정하기] 버튼으로 수정</span>
-          )}
           {subject.isNew && (
             <span className="text-amber-600 bg-amber-100 px-1.5 py-0.5 rounded text-[10px]">
               🆕 신규 등록 → 진행 캘린더 생성 안 됨
@@ -1371,7 +1209,7 @@ function SchedulePreview({ subject, holidays, cycleHistory }) {
             <span className="font-bold">{fmtKDate(currentStart)}</span>
             <span className="mx-1 text-amber-500">~</span>
             <span className="font-bold">{fmtKDate(currentEnd)}</span>
-            <span className="ml-2 text-amber-700">({currentFinals.length}회차)</span>
+            <span className="ml-2 text-amber-700">({currentSessions.length}회차)</span>
           </div>
         )}
       </div>
@@ -1390,7 +1228,7 @@ function SchedulePreview({ subject, holidays, cycleHistory }) {
               <span className="font-bold">{fmtKDate(planStart)}</span>
               <span className="mx-1 text-rose-500">~</span>
               <span className="font-bold">{fmtKDate(planEnd)}</span>
-              <span className="ml-2 text-rose-700">(총 {planFinals.length}회차 · 주 {subject.classDays.length}회)</span>
+              <span className="ml-2 text-rose-700">(총 {planSessions.length}회차 · 주 {subject.classDays.length}회)</span>
               {!planComplete && (
                 <span className="ml-2 text-orange-600 font-semibold">
                   ⚠️ {subject.totalSessions}회 중 {planSessions.length}회만 계산됨
@@ -1409,33 +1247,33 @@ function SchedulePreview({ subject, holidays, cycleHistory }) {
       {/* 회차 목록 */}
       {expanded && (
         <>
-          {!subject.isNew && currentFinals.length > 0 && (
+          {!subject.isNew && currentSessions.length > 0 && (
             <div className="mb-2">
               <div className="text-[10px] text-amber-700 font-semibold mb-1">진행 캘린더 회차:</div>
               <div className="grid grid-cols-3 md:grid-cols-4 gap-1">
-                {currentFinals.map((f) => (
-                  <div key={f.num} className="bg-amber-100 border border-amber-200 rounded px-1.5 py-0.5 text-[11px]">
-                    <span className="text-amber-600">{f.num}회차</span>
+                {currentSessions.map((s) => (
+                  <div key={s.sessionNum} className="bg-amber-100 border border-amber-200 rounded px-1.5 py-0.5 text-[11px]">
+                    <span className="text-amber-600">{s.sessionNum}회차</span>
                     <span className="ml-1 font-semibold text-amber-900">
-                      {(f.adjusted || f.holidayShifted) && '↪'}{f.isExtra && '➕'}{f.dateStr.slice(5, 7)}/{f.dateStr.slice(8, 10)}
+                      {String(s.date.getMonth() + 1).padStart(2, '0')}/{String(s.date.getDate()).padStart(2, '0')}
                     </span>
-                    <span className="ml-0.5 text-amber-500 text-[10px]">({DAY_NAMES_KO[parseDate(f.dateStr).getDay()]})</span>
+                    <span className="ml-0.5 text-amber-500 text-[10px]">({DAY_NAMES_KO[s.date.getDay()]})</span>
                   </div>
                 ))}
               </div>
             </div>
           )}
-          {planFinals.length > 0 && (
+          {planSessions.length > 0 && (
             <div>
               <div className="text-[10px] text-rose-700 font-semibold mb-1">계획 캘린더 회차:</div>
               <div className="grid grid-cols-3 md:grid-cols-4 gap-1">
-                {planFinals.map((f) => (
-                  <div key={f.num} className="bg-rose-100 border border-rose-200 rounded px-1.5 py-0.5 text-[11px]">
-                    <span className="text-rose-600">{f.num}회차</span>
+                {planSessions.map((s) => (
+                  <div key={s.sessionNum} className="bg-rose-100 border border-rose-200 rounded px-1.5 py-0.5 text-[11px]">
+                    <span className="text-rose-600">{s.sessionNum}회차</span>
                     <span className="ml-1 font-semibold text-rose-900">
-                      {(f.adjusted || f.holidayShifted) && '↪'}{f.isExtra && '➕'}{f.dateStr.slice(5, 7)}/{f.dateStr.slice(8, 10)}
+                      {String(s.date.getMonth() + 1).padStart(2, '0')}/{String(s.date.getDate()).padStart(2, '0')}
                     </span>
-                    <span className="ml-0.5 text-rose-500 text-[10px]">({DAY_NAMES_KO[parseDate(f.dateStr).getDay()]})</span>
+                    <span className="ml-0.5 text-rose-500 text-[10px]">({DAY_NAMES_KO[s.date.getDay()]})</span>
                   </div>
                 ))}
               </div>
@@ -2224,35 +2062,162 @@ function ScheduleAdjustmentManager({ subject, holidays, onUpdate }) {
 }
 
 // 보강 일정 관리자
-function MakeupManager({ subject, onUpdate }) {
-  const [showForm, setShowForm] = useState(false);
+function MakeupManager({ subject, holidays, onUpdate }) {
+  const [mode, setMode] = useState(null); // null | 'single' | 'repeat'
+
+  // 단일 추가
   const [date, setDate] = useState('');
   const [note, setNote] = useState('');
-  
+
+  // 반복 추가
+  const [repeatDays, setRepeatDays] = useState([6]); // 기본: 토요일
+  const [rangeStart, setRangeStart] = useState('');
+  const [rangeEnd, setRangeEnd] = useState('');
+  const [repeatInterval, setRepeatInterval] = useState('weekly'); // weekly | biweekly
+  const [excludeHolidays, setExcludeHolidays] = useState(true);
+  const [repeatNote, setRepeatNote] = useState('');
+
   const makeups = subject.makeups || [];
-  
+  const dayLabels = ['일', '월', '화', '수', '목', '금', '토'];
+  const holidaySet = new Set((holidays || []).map(h => h.date));
+  const holidayLabel = new Map((holidays || []).map(h => [h.date, h.label]));
+
+  // ── 이번 주기 범위 자동 계산 ───────────────────────────
+  const cycleRange = (() => {
+    if (!subject.startDate || !(subject.classDays || []).length) return null;
+    const sessions = getClassSessions(
+      parseDate(subject.startDate),
+      subject.classDays,
+      subject.totalSessions,
+      holidaySet,
+      subject.skipHolidays
+    );
+    if (sessions.length === 0) return null;
+    return {
+      start: formatDateStr(sessions[0].date),
+      end: formatDateStr(sessions[sessions.length - 1].date),
+    };
+  })();
+
+  const fillCycleRange = () => {
+    if (!cycleRange) {
+      alert('과목의 시작일과 수업요일을 먼저 입력해주세요.');
+      return;
+    }
+    setRangeStart(cycleRange.start);
+    setRangeEnd(cycleRange.end);
+  };
+
+  const toggleRepeatDay = (dow) => {
+    setRepeatDays(prev =>
+      prev.includes(dow) ? prev.filter(d => d !== dow) : [...prev, dow].sort((a, b) => a - b)
+    );
+  };
+
+  // ── 반복 날짜 생성 ────────────────────────────────────
+  const generated = (() => {
+    if (!repeatDays.length || !rangeStart || !rangeEnd) return [];
+    const start = parseDate(rangeStart);
+    const end = parseDate(rangeEnd);
+    if (!start || !end || start > end) return [];
+
+    const existing = new Set(makeups.map(m => m.date));
+    const classDaySet = new Set(subject.classDays || []);
+    const rows = [];
+    const seenPerDow = {}; // 격주 계산용: 요일별 등장 순번
+
+    let cur = new Date(start);
+    let guard = 0;
+    while (cur <= end && guard < 400) {
+      const dow = cur.getDay();
+      const ds = formatDateStr(cur);
+      if (repeatDays.includes(dow)) {
+        seenPerDow[dow] = (seenPerDow[dow] || 0) + 1;
+        const passesInterval = repeatInterval === 'weekly' || seenPerDow[dow] % 2 === 1;
+        if (passesInterval) {
+          const isHoliday = holidaySet.has(ds);
+          const skipped = excludeHolidays && isHoliday;
+          rows.push({
+            date: ds,
+            dow,
+            duplicate: existing.has(ds),
+            isHoliday,
+            holidayLabel: holidayLabel.get(ds) || '',
+            classDayConflict: classDaySet.has(dow),
+            skipped,
+          });
+        }
+      }
+      cur = addDays(cur, 1);
+      guard++;
+    }
+    return rows;
+  })();
+
+  const toAdd = generated.filter(r => !r.skipped && !r.duplicate);
+  const skippedHolidayCount = generated.filter(r => r.skipped).length;
+  const duplicateCount = generated.filter(r => r.duplicate && !r.skipped).length;
+  const conflictCount = toAdd.filter(r => r.classDayConflict).length;
+
+  const handleRepeatAdd = () => {
+    if (toAdd.length === 0) {
+      alert('추가할 보강 일정이 없습니다. 요일과 기간을 확인해주세요.');
+      return;
+    }
+    const newItems = toAdd.map(r => ({ date: r.date, note: repeatNote || '정기 보강' }));
+    onUpdate([...makeups, ...newItems].sort((a, b) => a.date.localeCompare(b.date)));
+    setRepeatNote('');
+    setMode(null);
+  };
+
   const handleAdd = () => {
     if (!date) {
       alert('보강 날짜를 선택하세요');
       return;
     }
-    const exists = makeups.some(m => m.date === date);
-    if (exists) {
+    if (makeups.some(m => m.date === date)) {
       alert('해당 날짜에 이미 보강이 등록되어 있습니다');
       return;
     }
-    onUpdate([...makeups, { date, note }]);
+    onUpdate([...makeups, { date, note }].sort((a, b) => a.date.localeCompare(b.date)));
     setDate('');
     setNote('');
-    setShowForm(false);
+    setMode(null);
   };
-  
+
   const handleRemove = (d) => {
     onUpdate(makeups.filter(m => m.date !== d));
   };
-  
-  const dayLabels = ['일', '월', '화', '수', '목', '금', '토'];
-  
+
+  const handleRemoveByDow = (dow) => {
+    const targets = makeups.filter(m => {
+      const pd = parseDate(m.date);
+      return pd && pd.getDay() === dow;
+    });
+    if (targets.length === 0) return;
+    if (!confirm(`${dayLabels[dow]}요일 보강 ${targets.length}건을 모두 삭제합니다. 계속하시겠습니까?`)) return;
+    onUpdate(makeups.filter(m => {
+      const pd = parseDate(m.date);
+      return !(pd && pd.getDay() === dow);
+    }));
+  };
+
+  const handleRemoveAll = () => {
+    if (makeups.length === 0) return;
+    if (!confirm(`보강 ${makeups.length}건을 모두 삭제합니다. 계속하시겠습니까?`)) return;
+    onUpdate([]);
+  };
+
+  // 등록된 보강의 요일 분포 (요일별 일괄 삭제 버튼용)
+  const dowCounts = (() => {
+    const c = {};
+    makeups.forEach(m => {
+      const pd = parseDate(m.date);
+      if (pd) c[pd.getDay()] = (c[pd.getDay()] || 0) + 1;
+    });
+    return c;
+  })();
+
   return (
     <div className="mt-2 p-2 bg-emerald-50 border border-emerald-200 rounded">
       <div className="flex items-center justify-between flex-wrap gap-2">
@@ -2262,469 +2227,194 @@ function MakeupManager({ subject, onUpdate }) {
             <span className="text-[10px] text-emerald-600">{makeups.length}건</span>
           )}
         </div>
-        <button
-          onClick={() => setShowForm(!showForm)}
-          className="px-2 py-0.5 bg-emerald-600 text-white text-[11px] rounded hover:bg-emerald-700"
-        >
-          {showForm ? '닫기' : '+ 보강 추가'}
-        </button>
+        <div className="flex gap-1">
+          <button
+            onClick={() => setMode(mode === 'repeat' ? null : 'repeat')}
+            className={`px-2 py-0.5 text-[11px] rounded font-semibold ${mode === 'repeat' ? 'bg-emerald-800 text-white' : 'bg-emerald-600 text-white hover:bg-emerald-700'}`}
+          >
+            🔁 반복 보강
+          </button>
+          <button
+            onClick={() => setMode(mode === 'single' ? null : 'single')}
+            className={`px-2 py-0.5 text-[11px] rounded ${mode === 'single' ? 'bg-emerald-800 text-white' : 'bg-white border border-emerald-400 text-emerald-700 hover:bg-emerald-100'}`}
+          >
+            + 하루만
+          </button>
+        </div>
       </div>
-      
-      {showForm && (
+
+      {/* ── 반복 보강 ─────────────────────────────── */}
+      {mode === 'repeat' && (
+        <div className="mt-2 p-2.5 bg-white border-2 border-emerald-300 rounded space-y-2">
+          {/* 요일 선택 */}
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-[11px] text-gray-600 w-12 shrink-0">요일</span>
+            <div className="flex gap-1">
+              {dayLabels.map((lbl, dow) => {
+                const on = repeatDays.includes(dow);
+                const isClassDay = (subject.classDays || []).includes(dow);
+                return (
+                  <button
+                    key={dow}
+                    onClick={() => toggleRepeatDay(dow)}
+                    title={isClassDay ? '정규 수업일입니다' : ''}
+                    className={`w-7 h-7 rounded text-[11px] font-bold transition ${
+                      on ? 'bg-emerald-600 text-white' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
+                    } ${isClassDay ? 'ring-1 ring-amber-400' : ''}`}
+                  >
+                    {lbl}
+                  </button>
+                );
+              })}
+            </div>
+            <select
+              value={repeatInterval}
+              onChange={(e) => setRepeatInterval(e.target.value)}
+              className="px-1.5 py-1 border rounded text-[11px]"
+            >
+              <option value="weekly">매주</option>
+              <option value="biweekly">격주</option>
+            </select>
+          </div>
+
+          {/* 기간 */}
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className="text-[11px] text-gray-600 w-12 shrink-0">기간</span>
+            <input type="date" value={rangeStart} onChange={(e) => setRangeStart(e.target.value)}
+                   className="px-1.5 py-1 border rounded text-[11px]" />
+            <span className="text-[11px] text-gray-400">~</span>
+            <input type="date" value={rangeEnd} onChange={(e) => setRangeEnd(e.target.value)}
+                   className="px-1.5 py-1 border rounded text-[11px]" />
+            <button onClick={fillCycleRange}
+                    className="px-2 py-1 bg-emerald-100 text-emerald-800 border border-emerald-300 rounded text-[11px] font-medium hover:bg-emerald-200">
+              📅 이번 주기로
+            </button>
+          </div>
+          {cycleRange && (
+            <p className="text-[10px] text-gray-400 pl-14">
+              이번 주기: {cycleRange.start} ~ {cycleRange.end}
+            </p>
+          )}
+
+          {/* 사유 + 옵션 */}
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className="text-[11px] text-gray-600 w-12 shrink-0">사유</span>
+            <input
+              type="text" value={repeatNote} onChange={(e) => setRepeatNote(e.target.value)}
+              placeholder="예: 토요 정기 보강"
+              className="flex-1 min-w-[140px] px-1.5 py-1 border rounded text-[11px]"
+            />
+            <label className="flex items-center gap-1 text-[11px] text-gray-600 cursor-pointer">
+              <input type="checkbox" checked={excludeHolidays}
+                     onChange={(e) => setExcludeHolidays(e.target.checked)} />
+              휴원일 제외
+            </label>
+          </div>
+
+          {/* 미리보기 */}
+          {generated.length > 0 ? (
+            <div className="border-t border-emerald-200 pt-2">
+              <div className="flex items-center justify-between mb-1 flex-wrap gap-1">
+                <span className="text-[11px] font-semibold text-emerald-800">
+                  미리보기 — <span className="text-emerald-600">{toAdd.length}건 추가</span>
+                </span>
+                <span className="text-[10px] text-gray-500">
+                  {skippedHolidayCount > 0 && `휴원일 제외 ${skippedHolidayCount} · `}
+                  {duplicateCount > 0 && `이미 등록됨 ${duplicateCount}`}
+                </span>
+              </div>
+              <div className="flex flex-wrap gap-1 max-h-24 overflow-y-auto">
+                {generated.map(r => (
+                  <span
+                    key={r.date}
+                    className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] border ${
+                      r.skipped ? 'bg-gray-100 border-gray-300 text-gray-400 line-through'
+                      : r.duplicate ? 'bg-amber-50 border-amber-300 text-amber-700'
+                      : 'bg-emerald-50 border-emerald-300 text-emerald-800 font-medium'
+                    }`}
+                    title={r.isHoliday ? `휴원일: ${r.holidayLabel}` : r.duplicate ? '이미 등록된 보강' : ''}
+                  >
+                    {r.date.substring(5)} ({dayLabels[r.dow]})
+                    {r.skipped && ' 휴원'}
+                    {r.duplicate && !r.skipped && ' 중복'}
+                  </span>
+                ))}
+              </div>
+              {conflictCount > 0 && (
+                <p className="text-[10px] text-amber-600 mt-1">
+                  ⚠️ {conflictCount}건이 정규 수업일과 같은 요일입니다. 의도한 것인지 확인해주세요.
+                </p>
+              )}
+              <button
+                onClick={handleRepeatAdd}
+                disabled={toAdd.length === 0}
+                className={`mt-2 w-full py-1.5 rounded text-xs font-bold ${
+                  toAdd.length > 0 ? 'bg-emerald-600 text-white hover:bg-emerald-700' : 'bg-gray-200 text-gray-400 cursor-not-allowed'
+                }`}
+              >
+                {toAdd.length > 0 ? `✅ 보강 ${toAdd.length}건 한번에 추가` : '추가할 일정 없음'}
+              </button>
+            </div>
+          ) : (
+            <p className="text-[10px] text-gray-400 border-t border-emerald-200 pt-2">
+              요일과 기간을 선택하면 생성될 보강 일정이 여기에 미리 표시됩니다.
+            </p>
+          )}
+        </div>
+      )}
+
+      {/* ── 하루만 추가 ───────────────────────────── */}
+      {mode === 'single' && (
         <div className="mt-2 p-2 bg-white border border-emerald-200 rounded">
           <div className="flex gap-1.5 flex-wrap items-center">
             <span className="text-[11px] text-gray-600">보강일:</span>
-            <input
-              type="date"
-              value={date}
-              onChange={(e) => setDate(e.target.value)}
-              className="px-1.5 py-0.5 border rounded text-xs"
-            />
-            <input
-              type="text"
-              value={note}
-              onChange={(e) => setNote(e.target.value)}
-              placeholder="사유 (예: 4회차 보강)"
-              className="flex-1 min-w-[120px] px-1.5 py-0.5 border rounded text-xs"
-            />
+            <input type="date" value={date} onChange={(e) => setDate(e.target.value)}
+                   className="px-1.5 py-0.5 border rounded text-xs" />
+            <input type="text" value={note} onChange={(e) => setNote(e.target.value)}
+                   placeholder="사유 (예: 4회차 보강)"
+                   className="flex-1 min-w-[120px] px-1.5 py-0.5 border rounded text-xs" />
             <button onClick={handleAdd} className="px-2 py-0.5 bg-emerald-600 text-white text-[11px] rounded">추가</button>
           </div>
         </div>
       )}
-      
+
+      {/* ── 등록된 보강 목록 ──────────────────────── */}
       {makeups.length > 0 && (
-        <div className="mt-1.5 flex flex-wrap gap-1">
-          {makeups.sort((a, b) => a.date.localeCompare(b.date)).map((m) => {
-            const d = parseDate(m.date);
-            return (
-              <span key={m.date} className="inline-flex items-center gap-1 bg-white border border-emerald-300 rounded px-1.5 py-0.5 text-[11px]">
-                <span className="font-bold text-emerald-700">🔵 {m.date.substring(5)} ({dayLabels[d.getDay()]})</span>
-                {m.note && <span className="text-gray-600 text-[10px]">{m.note}</span>}
-                <button onClick={() => handleRemove(m.date)} className="text-emerald-400 hover:text-emerald-700 ml-0.5">×</button>
-              </span>
-            );
-          })}
+        <div className="mt-1.5">
+          <div className="flex flex-wrap gap-1">
+            {[...makeups].sort((a, b) => a.date.localeCompare(b.date)).map((m) => {
+              const d = parseDate(m.date);
+              return (
+                <span key={m.date} className="inline-flex items-center gap-1 bg-white border border-emerald-300 rounded px-1.5 py-0.5 text-[11px]">
+                  <span className="font-bold text-emerald-700">🔵 {m.date.substring(5)} ({dayLabels[d.getDay()]})</span>
+                  {m.note && <span className="text-gray-600 text-[10px]">{m.note}</span>}
+                  <button onClick={() => handleRemove(m.date)} className="text-emerald-400 hover:text-emerald-700 ml-0.5">×</button>
+                </span>
+              );
+            })}
+          </div>
+          <div className="flex flex-wrap gap-1 mt-1.5 items-center">
+            <span className="text-[10px] text-gray-500">일괄 삭제:</span>
+            {Object.keys(dowCounts).map(k => {
+              const dow = Number(k);
+              return (
+                <button key={dow} onClick={() => handleRemoveByDow(dow)}
+                        className="px-1.5 py-0.5 bg-white border border-gray-300 text-gray-600 rounded text-[10px] hover:bg-red-50 hover:border-red-300 hover:text-red-600">
+                  {dayLabels[dow]}요일 {dowCounts[dow]}건
+                </button>
+              );
+            })}
+            <button onClick={handleRemoveAll}
+                    className="px-1.5 py-0.5 bg-white border border-red-300 text-red-600 rounded text-[10px] hover:bg-red-50">
+              전체 {makeups.length}건
+            </button>
+          </div>
         </div>
       )}
+
       <p className="text-[10px] text-emerald-600/70 mt-1">
         💡 보강 일정은 캘린더에 <strong>🔵 시안색 박스</strong>로 표시됩니다. 진행 캘린더 종료일과 계획 시작일 <strong>사이의 보강(예: 4/4)도 진행 캘린더에 표시</strong>됩니다.
       </p>
-    </div>
-  );
-}
-
-// ═══════════════════════════════════════════════════
-//  캘린더 직접 수정 (날짜 클릭으로 이동·추가·삭제·보강)
-// ═══════════════════════════════════════════════════
-
-function InteractiveScheduleCalendar({ subject, holidays, absences, onUpdate, cycleHistory }) {
-  const hasChanges = (subject.adjustments || []).length + (subject.makeups || []).length > 0;
-  const [open, setOpen] = useState(hasChanges);
-  const [sel, setSel] = useState(null); // {kind:'session'|'makeup'|'empty', ...}
-  const [noteDraft, setNoteDraft] = useState('');
-  const [extendBefore, setExtendBefore] = useState(0);
-  const [extendAfter, setExtendAfter] = useState(0);
-
-  const adjustments = subject.adjustments || [];
-  const makeups = subject.makeups || [];
-  const holidaySet = new Set((holidays || []).map(h => h.date));
-  const holidayMap = new Map((holidays || []).map(h => [h.date, h.label]));
-  const absentSet = new Set((absences || []).map(a => a.date));
-
-  const canCalc = subject.startDate && subject.classDays && subject.classDays.length > 0 && subject.totalSessions > 0;
-  if (!canCalc) return null;
-
-  // 자동 회차 + 조정 적용 (표시 번호는 인쇄 캘린더와 동일한 규칙 = applyScheduleAdjustments)
-  const newCycleStart = parseDate(subject.startDate);
-  const newCycleStartStr = formatDateStr(newCycleStart);
-  let planFinals = [], prevFinals = [], deletedRecs = [];
-
-  const holOpts = { holidaySet, classDays: subject.classDays, skipHolidays: subject.skipHolidays };
-  const planAuto = getClassSessions(newCycleStart, subject.classDays, subject.totalSessions, holidaySet, subject.skipHolidays);
-  if (planAuto.length > 0) {
-    const cs = formatDateStr(planAuto[0].date);
-    const ce = formatDateStr(planAuto[planAuto.length - 1].date);
-    const res = applyScheduleAdjustments(planAuto, adjustments, { cycleStartStr: cs, cycleEndStr: ce, addFrom: newCycleStartStr, addTo: '', ...holOpts });
-    planFinals = res.finals;
-    deletedRecs = deletedRecs.concat(res.deleted);
-  }
-  // 지난 주기: 저장된 기록이 있으면 여기서는 표시·수정하지 않음 (📆 일정의 수정 모드 담당)
-  let histPrev = false;
-  {
-    const hists = cycleHistory || [];
-    for (let i = hists.length - 1; i >= 0; i--) {
-      if ((hists[i].subjects || []).some(x => x.name === subject.name && (x.schedule || []).length > 0)) { histPrev = true; break; }
-    }
-  }
-  if (!subject.isNew && !histPrev) {
-    const edPrevDays = (subject.prevClassDays && subject.prevClassDays.length > 0) ? subject.prevClassDays : subject.classDays;
-    const edPrevTotal = subject.prevTotalSessions || subject.totalSessions;
-    const prevAuto = getPreviousCycleSessions(newCycleStart, edPrevDays, edPrevTotal, holidaySet, subject.skipHolidays);
-    if (prevAuto.length > 0) {
-      const cs = formatDateStr(prevAuto[0].date);
-      const ce = formatDateStr(prevAuto[prevAuto.length - 1].date);
-      const res = applyScheduleAdjustments(prevAuto, adjustments, { cycleStartStr: cs, cycleEndStr: ce, addFrom: cs, addTo: formatDateStr(addDays(newCycleStart, -1)), ...holOpts, classDays: edPrevDays });
-      prevFinals = res.finals;
-      deletedRecs = deletedRecs.concat(res.deleted);
-    }
-  }
-  // 삭제 레코드 중복 제거 (양쪽 주기에서 겹칠 일은 없지만 안전)
-  const seenDel = new Set();
-  deletedRecs = deletedRecs.filter(d => seenDel.has(d.srcIdx) ? false : (seenDel.add(d.srcIdx), true));
-
-  // 날짜 → 표시 항목 맵
-  const dateMap = new Map(); // dateStr → { prev:[f], plan:[f], makeups:[{idx, m}] }
-  const ensure = (k) => { if (!dateMap.has(k)) dateMap.set(k, { prev: [], plan: [], makeups: [] }); return dateMap.get(k); };
-  prevFinals.forEach(f => ensure(f.dateStr).prev.push(f));
-  planFinals.forEach(f => ensure(f.dateStr).plan.push(f));
-  makeups.forEach((m, idx) => { if (m.date) ensure(m.date).makeups.push({ idx, m }); });
-
-  const allDateStrs = [...dateMap.keys()].sort();
-  if (allDateStrs.length === 0) return null;
-
-  // 표시할 달 범위 (± 확장 가능)
-  const firstD = parseDate(allDateStrs[0]);
-  const lastD = parseDate(allDateStrs[allDateStrs.length - 1]);
-  const monthCursor = new Date(firstD.getFullYear(), firstD.getMonth() - extendBefore, 1);
-  const monthEnd = new Date(lastD.getFullYear(), lastD.getMonth() + extendAfter, 1);
-  const months = [];
-  const mc = new Date(monthCursor);
-  while (mc <= monthEnd) {
-    months.push({ year: mc.getFullYear(), month: mc.getMonth() + 1 });
-    mc.setMonth(mc.getMonth() + 1);
-  }
-
-  const fmtD = (ds) => `${ds.slice(5, 7)}/${ds.slice(8, 10)} (${DAY_NAMES_KO[parseDate(ds).getDay()]})`;
-
-  const guardHoliday = (target) => {
-    if (holidaySet.has(target) && !(subject.skipHolidays || []).includes(target)) {
-      alert(`${fmtD(target)}은(는) 휴원일이라 수업을 넣을 수 없어요.\n(⚙️ 학원 설정 > 휴일에서 해제하거나 다른 날짜를 선택하세요)`);
-      return true;
-    }
-    return false;
-  };
-
-  // ── 데이터 변경 핸들러 ──
-  const moveSession = (f, target) => {
-    if (guardHoliday(target)) return;
-    let next;
-    if (f.isExtra) {
-      // 추가 수업(또는 살려낸 수정)의 날짜만 갱신
-      next = adjustments.map((a, i) => i !== f.srcIdx ? a : (a.type === 'add' ? { ...a, date: target } : { ...a, newDate: target }));
-    } else if (f.srcIdx >= 0) {
-      // 기록이 있는 회차(이동됨 또는 사유만 저장됨): 원래 날짜로 되돌리면 레코드 제거(사유 있으면 유지), 아니면 새 날짜로 갱신
-      const rec = adjustments[f.srcIdx];
-      next = (target === f.originalDate && !(rec && rec.note))
-        ? adjustments.filter((_, i) => i !== f.srcIdx)
-        : adjustments.map((a, i) => i === f.srcIdx ? { ...a, newDate: target } : a);
-    } else {
-      next = [...adjustments, { type: 'modify', sessionNum: f.autoNum, originalDate: f.originalDate, newDate: target, note: '' }];
-    }
-    onUpdate({ adjustments: next });
-    setSel(null);
-  };
-
-  const deleteSession = (f) => {
-    let next;
-    if (f.isExtra) {
-      next = adjustments.filter((_, i) => i !== f.srcIdx);
-    } else if (f.srcIdx >= 0) {
-      next = adjustments.map((a, i) => i === f.srcIdx ? { type: 'delete', sessionNum: f.autoNum, originalDate: f.originalDate, note: a.note || '' } : a);
-    } else {
-      next = [...adjustments, { type: 'delete', sessionNum: f.autoNum, originalDate: f.originalDate, note: '' }];
-    }
-    onUpdate({ adjustments: next });
-    setSel(null);
-  };
-
-  const revertSession = (f) => {
-    if (f.srcIdx < 0) return;
-    onUpdate({ adjustments: adjustments.filter((_, i) => i !== f.srcIdx) });
-    setSel(null);
-  };
-
-  const restoreDeleted = (srcIdx) => {
-    onUpdate({ adjustments: adjustments.filter((_, i) => i !== srcIdx) });
-  };
-
-  const addSession = (dateStr) => {
-    if (guardHoliday(dateStr)) return;
-    onUpdate({ adjustments: [...adjustments, { type: 'add', date: dateStr, note: '' }] });
-    setSel(null);
-  };
-
-  const addMakeup = (dateStr) => {
-    if (guardHoliday(dateStr)) return;
-    if (makeups.some(m => m.date === dateStr)) { alert('해당 날짜에 이미 보강이 등록되어 있어요'); return; }
-    onUpdate({ makeups: [...makeups, { date: dateStr, note: '' }] });
-    setSel(null);
-  };
-
-  const moveMakeup = (idx, target) => {
-    if (guardHoliday(target)) return;
-    onUpdate({ makeups: makeups.map((m, i) => i === idx ? { ...m, date: target } : m) });
-    setSel(null);
-  };
-
-  const deleteMakeup = (idx) => {
-    onUpdate({ makeups: makeups.filter((_, i) => i !== idx) });
-    setSel(null);
-  };
-
-  // 선택된 회차/보강에 사유 저장 (캘린더에 표시됨)
-  const saveNote = () => {
-    if (!sel) return;
-    const text = noteDraft.trim();
-    if (sel.kind === 'makeup') {
-      onUpdate({ makeups: makeups.map((m, i) => i === sel.idx ? { ...m, note: text } : m) });
-      setSel(null);
-      return;
-    }
-    if (sel.kind !== 'session') return;
-    const f = sel.f;
-    let next;
-    if (f.srcIdx >= 0) {
-      next = adjustments.map((a, i) => i === f.srcIdx ? { ...a, note: text } : a);
-      // 이동도 없고 사유도 지웠으면 레코드 자체를 정리
-      const rec = next[f.srcIdx];
-      if (!text && (rec.type === 'modify' || !rec.type) && rec.newDate === rec.originalDate) {
-        next = next.filter((_, i) => i !== f.srcIdx);
-      }
-    } else {
-      if (!text) { setSel(null); return; }
-      // 자동 회차에 사유만 저장: 날짜 그대로의 수정 레코드를 만들어 메모를 담음
-      next = [...adjustments, { type: 'modify', sessionNum: f.autoNum, originalDate: f.originalDate, newDate: f.dateStr, note: text }];
-    }
-    onUpdate({ adjustments: next });
-    setSel(null);
-  };
-
-  const resetAll = () => {
-    if (!confirm('이 과목의 일정 변경(이동·추가·삭제)과 보강을 모두 초기화할까요?\n자동 계산 일정으로 돌아갑니다.')) return;
-    onUpdate({ adjustments: [], makeups: [] });
-    setSel(null);
-  };
-
-  // ── 셀 클릭 ──
-  const cellClick = (dateStr) => {
-    const entry = dateMap.get(dateStr) || { prev: [], plan: [], makeups: [] };
-    const hasSession = entry.prev.length > 0 || entry.plan.length > 0;
-    // 이동 모드: 선택된 회차/보강을 클릭한 날짜로 이동 (수업이 이미 있는 날짜는 선택 전환)
-    if (sel && (sel.kind === 'session' || sel.kind === 'makeup') && sel.dateStr !== dateStr && !hasSession) {
-      if (sel.kind === 'session') moveSession(sel.f, dateStr);
-      else moveMakeup(sel.idx, dateStr);
-      return;
-    }
-    if (sel && sel.dateStr === dateStr) { setSel(null); return; }
-    if (hasSession) {
-      const f = entry.plan[0] || entry.prev[0];
-      setNoteDraft(f.note || '');
-      setSel({ kind: 'session', cycle: entry.plan[0] ? 'plan' : 'prev', f, dateStr });
-      return;
-    }
-    if (entry.makeups.length > 0) {
-      setNoteDraft(entry.makeups[0].m.note || '');
-      setSel({ kind: 'makeup', idx: entry.makeups[0].idx, dateStr });
-      return;
-    }
-    setNoteDraft('');
-    setSel({ kind: 'empty', dateStr });
-  };
-
-  const totalChanges = adjustments.length + makeups.length;
-
-  return (
-    <div className="mt-2 border-2 border-blue-300 rounded-lg overflow-hidden">
-      <button
-        type="button"
-        onClick={() => { setOpen(!open); setSel(null); }}
-        className="w-full flex items-center justify-between px-3 py-2 bg-blue-100 hover:bg-blue-200 transition"
-      >
-        <span className="text-sm font-bold text-blue-900">
-          🖱️ 캘린더에서 일정 바로 수정
-          {totalChanges > 0 && <span className="ml-2 text-[11px] bg-blue-600 text-white px-1.5 py-0.5 rounded-full">{totalChanges}건 변경됨</span>}
-        </span>
-        <span className="text-blue-700 text-xs">{open ? '접기 ▲' : '열기 ▼ (클릭으로 이동·추가·삭제·보강)'}</span>
-      </button>
-
-      {open && (
-        <div className="p-2 bg-white">
-          {/* 사용법 안내 */}
-          <div className="mb-2 p-2 bg-gray-50 border border-gray-200 rounded text-[11px] text-gray-600 leading-relaxed">
-            💡 <strong>회차를 클릭</strong> → 원하는 <strong>빈 날짜를 클릭</strong>하면 그 날로 이동해요. ·
-            <strong> 빈 날짜를 클릭</strong>하면 수업·보강을 추가할 수 있어요. ·
-            선택 후 <strong>삭제</strong> 버튼으로 회차를 뺄 수 있고, <strong>💬 사유</strong>를 적으면 캘린더 회차 아래에 표시돼요. ·
-            휴원일이 새로 등록되면 겹친 회차는 <strong>다음 수업일로 자동 이동</strong>됩니다.
-          </div>
-
-          {histPrev && (
-            <div className="mb-2 p-2 bg-amber-50 border border-amber-200 rounded text-[11px] text-amber-800">
-              📜 이 과목의 <strong>지난 주기 일정은 기록으로 저장</strong>되어 있어요. 여기서는 <strong>이번 계획만</strong> 수정하고,
-              지난 일정은 이 캘린더 아래의 <strong>[📜 지난 일정 수정하기]</strong> 버튼으로 고쳐주세요.
-            </div>
-          )}
-
-          {/* 선택 배너 */}
-          {sel && (
-            <div className="mb-2 p-2 rounded border-2 border-blue-400 bg-blue-50 flex items-center gap-2 flex-wrap sticky top-0 z-10">
-              {sel.kind === 'session' && (
-                <>
-                  <span className="text-xs font-bold text-blue-900">
-                    📌 {sel.cycle === 'plan' ? '계획' : '진행'} {sel.f.num}회차 · {fmtD(sel.dateStr)} 선택됨
-                    {sel.f.adjusted && !sel.f.holidayShifted && <span className="ml-1 text-amber-700">(↪ {fmtD(sel.f.originalDate)}에서 이동된 회차)</span>}
-                    {sel.f.holidayShifted && <span className="ml-1 text-red-600">(⚠️ 휴원일과 겹쳐 자동 이동됨)</span>}
-                    {sel.f.isExtra && <span className="ml-1 text-teal-700">(➕ 추가된 수업)</span>}
-                  </span>
-                  <span className="text-[11px] text-blue-700">→ 옮길 날짜를 클릭하세요</span>
-                  <span className="flex gap-1 ml-auto">
-                    <button onClick={() => deleteSession(sel.f)} className="px-2 py-1 bg-rose-600 text-white text-[11px] rounded font-semibold">🗑️ 이 회차 삭제</button>
-                    {sel.f.srcIdx >= 0 && (
-                      <button onClick={() => revertSession(sel.f)} className="px-2 py-1 bg-amber-500 text-white text-[11px] rounded font-semibold">↩️ 원래대로</button>
-                    )}
-                    <button onClick={() => setSel(null)} className="px-2 py-1 bg-gray-300 text-gray-700 text-[11px] rounded">취소</button>
-                  </span>
-                  <span className="flex items-center gap-1 w-full mt-1">
-                    <span className="text-[11px] text-gray-600 whitespace-nowrap">💬 사유:</span>
-                    <input
-                      type="text"
-                      value={noteDraft}
-                      onChange={(e) => setNoteDraft(e.target.value)}
-                      onKeyDown={(e) => e.key === 'Enter' && saveNote()}
-                      placeholder="예: 제헌절 휴원, 학교 행사 → 캘린더 회차 아래에 표시됩니다"
-                      className="flex-1 min-w-[120px] px-1.5 py-0.5 border border-blue-300 rounded text-xs"
-                    />
-                    <button onClick={saveNote} className="px-2 py-1 bg-blue-600 text-white text-[11px] rounded font-semibold whitespace-nowrap">사유 저장</button>
-                  </span>
-                </>
-              )}
-              {sel.kind === 'makeup' && (
-                <>
-                  <span className="text-xs font-bold text-cyan-800">🔵 보강 · {fmtD(sel.dateStr)} 선택됨</span>
-                  <span className="text-[11px] text-blue-700">→ 옮길 날짜를 클릭하세요</span>
-                  <span className="flex gap-1 ml-auto">
-                    <button onClick={() => deleteMakeup(sel.idx)} className="px-2 py-1 bg-rose-600 text-white text-[11px] rounded font-semibold">🗑️ 보강 삭제</button>
-                    <button onClick={() => setSel(null)} className="px-2 py-1 bg-gray-300 text-gray-700 text-[11px] rounded">취소</button>
-                  </span>
-                  <span className="flex items-center gap-1 w-full mt-1">
-                    <span className="text-[11px] text-gray-600 whitespace-nowrap">💬 사유:</span>
-                    <input
-                      type="text"
-                      value={noteDraft}
-                      onChange={(e) => setNoteDraft(e.target.value)}
-                      onKeyDown={(e) => e.key === 'Enter' && saveNote()}
-                      placeholder="예: 6회차 결석 보강 → 캘린더 보강 아래에 표시됩니다"
-                      className="flex-1 min-w-[120px] px-1.5 py-0.5 border border-cyan-300 rounded text-xs"
-                    />
-                    <button onClick={saveNote} className="px-2 py-1 bg-cyan-600 text-white text-[11px] rounded font-semibold whitespace-nowrap">사유 저장</button>
-                  </span>
-                </>
-              )}
-              {sel.kind === 'empty' && (
-                <>
-                  <span className="text-xs font-bold text-gray-800">📅 {fmtD(sel.dateStr)}</span>
-                  <span className="flex gap-1 ml-auto">
-                    <button onClick={() => addSession(sel.dateStr)} className="px-2 py-1 bg-teal-600 text-white text-[11px] rounded font-semibold">➕ 이 날 수업 추가</button>
-                    <button onClick={() => addMakeup(sel.dateStr)} className="px-2 py-1 bg-cyan-600 text-white text-[11px] rounded font-semibold">🔵 이 날 보강 추가</button>
-                    <button onClick={() => setSel(null)} className="px-2 py-1 bg-gray-300 text-gray-700 text-[11px] rounded">취소</button>
-                  </span>
-                </>
-              )}
-            </div>
-          )}
-
-          {/* 범례 + 달 확장 */}
-          <div className="flex items-center justify-between flex-wrap gap-1 mb-1">
-            <div className="flex items-center gap-2 flex-wrap text-[10px] text-gray-600">
-              <span><span className="inline-block w-2.5 h-2.5 rounded-sm align-middle mr-0.5" style={{ background: '#fbbf24' }}></span>진행(지난 주기)</span>
-              <span><span className="inline-block w-2.5 h-2.5 rounded-sm align-middle mr-0.5" style={{ background: '#fb7185' }}></span>계획(이번 청구)</span>
-              <span>↪ 이동됨</span>
-              <span>➕ 추가</span>
-              <span>🔵 보강</span>
-              <span className="text-red-600">■ 휴원일</span>
-            </div>
-            <div className="flex gap-1">
-              <button onClick={() => setExtendBefore(extendBefore + 1)} className="px-1.5 py-0.5 text-[10px] bg-gray-100 border rounded hover:bg-gray-200">◀ 이전 달</button>
-              <button onClick={() => setExtendAfter(extendAfter + 1)} className="px-1.5 py-0.5 text-[10px] bg-gray-100 border rounded hover:bg-gray-200">다음 달 ▶</button>
-            </div>
-          </div>
-
-          {/* 월별 캘린더 */}
-          {months.map(({ year, month }) => {
-            const weeks = buildMonthWeeks(year, month);
-            return (
-              <div key={`${year}-${month}`} className="mb-2">
-                <div className="text-xs font-bold text-gray-800 text-center mb-0.5">{year}년 {String(month).padStart(2, '0')}월</div>
-                <div className="grid grid-cols-7 gap-px bg-gray-300 border border-gray-300">
-                  {DAY_NAMES_KO.map((day, i) => (
-                    <div key={i} className="bg-gray-100 text-center text-[10px] font-semibold py-0.5" style={{ color: i === 0 ? '#dc2626' : i === 6 ? '#2563eb' : '#374151' }}>{day}</div>
-                  ))}
-                  {weeks.flat().map((date, idx) => {
-                    const dstr = formatDateStr(date);
-                    const isCurrentMonth = date.getMonth() === month - 1;
-                    const holiday = holidayMap.get(dstr);
-                    const entry = dateMap.get(dstr);
-                    const isSelected = sel && sel.dateStr === dstr;
-                    const moving = sel && (sel.kind === 'session' || sel.kind === 'makeup');
-                    return (
-                      <div
-                        key={idx}
-                        onClick={() => isCurrentMonth && cellClick(dstr)}
-                        className={`relative flex flex-col items-center px-0.5 py-0.5 min-h-[46px] text-center select-none ${isCurrentMonth ? 'cursor-pointer' : ''} ${isSelected ? 'ring-2 ring-inset ring-blue-500' : ''} ${moving && isCurrentMonth && !isSelected ? 'hover:bg-blue-100' : isCurrentMonth ? 'hover:bg-gray-100' : ''}`}
-                        style={{ background: !isCurrentMonth ? '#f3f4f6' : holiday ? '#FEE2E2' : isSelected ? '#dbeafe' : 'white', opacity: isCurrentMonth ? 1 : 0.4 }}
-                      >
-                        <div className="text-[10px] leading-none" style={{ color: holiday ? '#dc2626' : date.getDay() === 0 ? '#dc2626' : date.getDay() === 6 ? '#2563eb' : '#111827', fontWeight: holiday ? 700 : 500 }}>{date.getDate()}</div>
-                        {holiday && isCurrentMonth && <div className="text-[8px] text-red-600 font-bold leading-tight">{holiday}</div>}
-                        {isCurrentMonth && entry && entry.prev.map((f, i) => (
-                          <React.Fragment key={`p${i}`}>
-                            <div className="text-[9px] font-extrabold leading-tight rounded px-0.5 mt-px" style={{ background: '#fef3c7', color: absentSet.has(f.dateStr) || (f.originalDate && absentSet.has(f.originalDate)) ? '#dc2626' : '#b45309', textDecoration: absentSet.has(f.dateStr) || (f.originalDate && absentSet.has(f.originalDate)) ? 'line-through' : 'none' }}>
-                              {(f.adjusted || f.holidayShifted) && '↪'}{f.isExtra && '➕'}{f.num}
-                            </div>
-                            {f.note && <div className="text-[7px] text-gray-500 leading-tight" style={{ wordBreak: 'keep-all' }}>{f.note}</div>}
-                          </React.Fragment>
-                        ))}
-                        {isCurrentMonth && entry && entry.plan.map((f, i) => (
-                          <React.Fragment key={`f${i}`}>
-                            <div className="text-[9px] font-extrabold leading-tight rounded px-0.5 mt-px" style={{ background: '#ffe4e6', color: '#be123c' }}>
-                              {(f.adjusted || f.holidayShifted) && '↪'}{f.isExtra && '➕'}{f.num}
-                            </div>
-                            {f.note && <div className="text-[7px] text-gray-500 leading-tight" style={{ wordBreak: 'keep-all' }}>{f.note}</div>}
-                          </React.Fragment>
-                        ))}
-                        {isCurrentMonth && entry && entry.makeups.map((mk, i) => (
-                          <React.Fragment key={`m${i}`}>
-                            <div className="text-[9px] font-extrabold leading-tight rounded px-0.5 mt-px" style={{ background: '#cffafe', color: '#0891b2' }}>🔵보강</div>
-                            {mk.m.note && <div className="text-[7px] leading-tight" style={{ color: '#0e7490', wordBreak: 'keep-all' }}>{mk.m.note}</div>}
-                          </React.Fragment>
-                        ))}
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            );
-          })}
-
-          {/* 삭제된 회차 복원 */}
-          {deletedRecs.length > 0 && (
-            <div className="mt-1 p-2 bg-rose-50 border border-rose-200 rounded">
-              <span className="text-[11px] font-semibold text-rose-700 mr-2">🗑️ 삭제된 회차:</span>
-              {deletedRecs.map((d) => (
-                <span key={d.srcIdx} className="inline-flex items-center gap-1 bg-white border border-rose-300 rounded px-1.5 py-0.5 text-[11px] mr-1">
-                  <span className="line-through text-gray-500">{fmtD(d.originalDate)}</span>
-                  <button onClick={() => restoreDeleted(d.srcIdx)} className="text-rose-600 hover:underline font-semibold">복원</button>
-                </span>
-              ))}
-            </div>
-          )}
-
-          {/* 전체 초기화 */}
-          {totalChanges > 0 && (
-            <div className="mt-1 text-right">
-              <button onClick={resetAll} className="text-[11px] text-gray-500 hover:text-rose-600 underline">⟲ 일정 변경 전체 초기화</button>
-            </div>
-          )}
-        </div>
-      )}
     </div>
   );
 }
@@ -2815,7 +2505,6 @@ function StudentForm({ student, onSave, onCancel, defaultSettings }) {
     grade: '',
     parentContact: '',
     note: '',
-    enrollDate: '',
     periodDisplay: '',
     isWithdrawn: false,
     withdrawnDate: '',
@@ -2824,18 +2513,11 @@ function StudentForm({ student, onSave, onCancel, defaultSettings }) {
     suspendEnd: '',
     isMonthly: false,
     monthlyYearMonth: '',
-    suspendHistory: [],
     subjects: [],
     materials: [],
   });
-  const [gapStart, setGapStart] = useState('');
-  const [gapEnd, setGapEnd] = useState('');
 
   const updateField = (field, value) => setData({ ...data, [field]: value });
-
-  // 📜 지난 일정(저장된 기록) 수정 창 — 편집 화면 안에서 바로 열기
-  const [showHistoryEdit, setShowHistoryEdit] = useState(false);
-  const hasHistFor = (name) => (data.cycleHistory || []).some(h => (h.subjects || []).some(hs => hs.name === name && (hs.schedule || []).length > 0));
 
   const addSubject = () => setData({
     ...data,
@@ -2957,12 +2639,7 @@ function StudentForm({ student, onSave, onCancel, defaultSettings }) {
               <label className="block text-xs font-semibold text-gray-700 mb-1">학년 (선택)</label>
               <input type="text" value={data.grade || ''} onChange={(e) => updateField('grade', e.target.value)} className="w-full px-3 py-2 border rounded text-sm" placeholder="예: 2학년" />
             </div>
-            <div>
-              <label className="block text-xs font-semibold text-gray-700 mb-1">🏫 첫 등원일 (선택)</label>
-              <input type="date" value={data.enrollDate || ''} onChange={(e) => updateField('enrollDate', e.target.value)} className="w-full px-3 py-2 border rounded text-sm" />
-              <p className="text-[10px] text-gray-400 mt-0.5">학원에 처음 등원한 날 — 납부 현황에서 이 날 이전 달에는 표시 안 됨</p>
-            </div>
-            <div>
+            <div className="md:col-span-2">
               <label className="block text-xs font-semibold text-gray-700 mb-1">기간 표시 (선택 — 비우면 자동 계산)</label>
               <input type="text" value={data.periodDisplay || ''} onChange={(e) => updateField('periodDisplay', e.target.value)} className="w-full px-3 py-2 border rounded text-sm" placeholder="예: 2025년 03월 ~ 04월" />
             </div>
@@ -3027,38 +2704,6 @@ function StudentForm({ student, onSave, onCancel, defaultSettings }) {
                     <span className="text-xs text-amber-600">휴원 중에는 청구·통계에서 제외</span>
                   </>
                 )}
-              </div>
-            </div>
-            {/* 😴 과거 휴원(쉼) 기간 — 복귀 시 자동 기록 + 직접 추가 가능 */}
-            <div className="md:col-span-2 p-3 rounded border bg-gray-50 border-gray-200">
-              <div className="text-sm font-semibold text-gray-700 mb-1">😴 과거 휴원(쉼) 기간</div>
-              <p className="text-[10px] text-gray-400 mb-2">여기 기록된 기간에 통째로 포함되는 달은 납부 현황에서 자동으로 빠져요. 복귀 버튼을 누르면 자동으로 기록됩니다.</p>
-              {(data.suspendHistory || []).length > 0 && (
-                <div className="flex flex-wrap gap-1.5 mb-2">
-                  {(data.suspendHistory || []).map((g, i) => (
-                    <span key={i} className="inline-flex items-center gap-1.5 bg-white border border-amber-300 rounded px-2 py-1 text-xs">
-                      <span className="font-medium text-amber-800">{g.start} ~ {g.end || '(복귀 전)'}</span>
-                      <button
-                        onClick={() => updateField('suspendHistory', (data.suspendHistory || []).filter((_, idx) => idx !== i))}
-                        className="text-amber-400 hover:text-rose-600 text-base leading-none"
-                      >×</button>
-                    </span>
-                  ))}
-                </div>
-              )}
-              <div className="flex gap-2 items-center flex-wrap">
-                <input type="date" value={gapStart} onChange={(e) => setGapStart(e.target.value)} className="px-2 py-1 border rounded text-sm" title="쉼 시작일" />
-                <span className="text-gray-400 text-xs">~</span>
-                <input type="date" value={gapEnd} onChange={(e) => setGapEnd(e.target.value)} className="px-2 py-1 border rounded text-sm" title="복귀 전날 또는 복귀일" />
-                <button
-                  onClick={() => {
-                    if (!gapStart || !gapEnd) { alert('쉼 시작일과 끝일을 모두 선택하세요'); return; }
-                    if (gapEnd < gapStart) { alert('끝일이 시작일보다 빠를 수 없어요'); return; }
-                    updateField('suspendHistory', [...(data.suspendHistory || []), { start: gapStart, end: gapEnd }]);
-                    setGapStart(''); setGapEnd('');
-                  }}
-                  className="px-3 py-1 bg-gray-600 hover:bg-gray-700 text-white rounded text-xs font-semibold"
-                >+ 기간 추가</button>
               </div>
             </div>
             <div className="md:col-span-2 p-3 rounded border" style={{ background: data.isMonthly ? '#eff6ff' : '#f9fafb', borderColor: data.isMonthly ? '#bfdbfe' : '#e5e7eb' }}>
@@ -3168,7 +2813,7 @@ function StudentForm({ student, onSave, onCancel, defaultSettings }) {
                     </div>
                   </div>
                   <div>
-                    <label className="block text-[11px] text-gray-600 mb-1">수업 요일 (주 {sub.classDays.length}회){sub.prevClassDays && sub.prevClassDays.length > 0 ? ' — 이번 계획에만 적용' : ''}</label>
+                    <label className="block text-[11px] text-gray-600 mb-1">수업 요일 (주 {sub.classDays.length}회)</label>
                     <div className="flex gap-1 flex-wrap">
                       {DAY_NAMES_KO.map((day, i) => (
                         <button key={i} onClick={() => toggleSubjectDay(sub.id, i)} className={`px-3 py-1 rounded text-xs font-medium ${sub.classDays.includes(i) ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-600'}`}>
@@ -3177,56 +2822,6 @@ function StudentForm({ student, onSave, onCancel, defaultSettings }) {
                       ))}
                     </div>
                   </div>
-
-                  {/* 지난 주기 전용 요일·회차 (요일이 주기 중간에 바뀐 경우) */}
-                  {!sub.isNew && (
-                    <div className="mt-2 p-2 bg-amber-50 border border-amber-200 rounded">
-                      <label className="flex items-center gap-2 cursor-pointer flex-wrap">
-                        <input
-                          type="checkbox"
-                          checked={!!(sub.prevClassDays && sub.prevClassDays.length > 0)}
-                          onChange={(e) => updateSubject(sub.id, e.target.checked
-                            ? { prevClassDays: [...sub.classDays], prevTotalSessions: sub.totalSessions }
-                            : { prevClassDays: null, prevTotalSessions: null })}
-                          className="w-4 h-4 accent-amber-600"
-                        />
-                        <span className="text-sm font-semibold text-amber-800">🔁 지난 주기는 요일·회차가 달랐어요</span>
-                        <span className="text-[11px] text-amber-600 ml-auto">예: 지난달 월·수 → 이번달 월·금</span>
-                      </label>
-                      {sub.prevClassDays && sub.prevClassDays.length > 0 && (
-                        <div className="mt-2">
-                          <div className="flex items-center gap-1 flex-wrap">
-                            <span className="text-[11px] text-gray-600 mr-1">지난 주기 요일:</span>
-                            {DAY_NAMES_KO.map((day, i) => (
-                              <button
-                                key={i}
-                                onClick={() => {
-                                  const has = sub.prevClassDays.includes(i);
-                                  const nd = has ? sub.prevClassDays.filter(d => d !== i) : [...sub.prevClassDays, i].sort();
-                                  updateSubject(sub.id, { prevClassDays: nd });
-                                }}
-                                className={`px-2.5 py-1 rounded text-xs font-medium ${sub.prevClassDays.includes(i) ? 'bg-amber-600 text-white' : 'bg-gray-200 text-gray-600'}`}
-                              >
-                                {day}
-                              </button>
-                            ))}
-                            <span className="text-[11px] text-gray-600 ml-2">총 회차:</span>
-                            <input
-                              type="number"
-                              min="1"
-                              value={sub.prevTotalSessions || sub.totalSessions}
-                              onChange={(e) => updateSubject(sub.id, { prevTotalSessions: parseInt(e.target.value) || sub.totalSessions })}
-                              className="w-16 px-2 py-1 border rounded text-sm"
-                            />
-                          </div>
-                          <p className="text-[10px] text-amber-700/80 mt-1">
-                            진행 캘린더(지난 주기)는 여기 설정한 요일·회차로 계산되고, 위의 <strong>수업 요일은 이번 계획 캘린더에만</strong> 적용됩니다.
-                            "다음 주기로 이동" 시에는 자동으로 기록되니 보통은 만질 필요 없어요.
-                          </p>
-                        </div>
-                      )}
-                    </div>
-                  )}
 
                   {/* 신규 등록 체크박스 */}
                   <div className="mt-2 p-2 bg-blue-50 border border-blue-200 rounded">
@@ -3245,37 +2840,7 @@ function StudentForm({ student, onSave, onCancel, defaultSettings }) {
                     </p>
                   </div>
 
-                  <SchedulePreview subject={sub} holidays={defaultSettings?.holidays} cycleHistory={data.cycleHistory} />
-
-                  {/* 캘린더 과목별 요약 문구 직접 쓰기 (선택) */}
-                  <div className="mt-2 p-2 bg-gray-50 border border-gray-200 rounded">
-                    <div className="text-[11px] font-semibold text-gray-700 mb-1">
-                      📝 캘린더 요약 문구 직접 쓰기
-                      <span className="font-normal text-gray-400 ml-1">(선택 — 비우면 자동: "총 8회차 (결석 1회) (보강 1회) · 주 2회")</span>
-                    </div>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                      <div>
-                        <label className="block text-[10px] text-amber-700 mb-0.5">진행 캘린더 요약</label>
-                        <input
-                          type="text"
-                          value={sub.summaryTextCurrent || ''}
-                          onChange={(e) => updateSubject(sub.id, { summaryTextCurrent: e.target.value })}
-                          placeholder="예: 총 8회차 · 주 2회 (보강 포함)"
-                          className="w-full px-2 py-1 border rounded text-xs"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-[10px] text-rose-700 mb-0.5">계획 캘린더 요약</label>
-                        <input
-                          type="text"
-                          value={sub.summaryTextPlan || ''}
-                          onChange={(e) => updateSubject(sub.id, { summaryTextPlan: e.target.value })}
-                          placeholder="예: 총 8회차 · 주 2회"
-                          className="w-full px-2 py-1 border rounded text-xs"
-                        />
-                      </div>
-                    </div>
-                  </div>
+                  <SchedulePreview subject={sub} holidays={defaultSettings?.holidays} />
                   <AbsenceManager
                     subjectId={sub.id}
                     subjectName={sub.name}
@@ -3290,12 +2855,6 @@ function StudentForm({ student, onSave, onCancel, defaultSettings }) {
                     })}
                   />
                   
-                  {/* 보강 일정 (캘린더에서 빈 날짜 클릭으로도 추가 가능 — 같은 데이터) */}
-                  <MakeupManager
-                    subject={sub}
-                    onUpdate={(makeups) => updateSubject(sub.id, { makeups })}
-                  />
-
                   {/* 휴원일 무시 (이 과목만 수업) */}
                   <SkipHolidayManager
                     subject={sub}
@@ -3303,25 +2862,19 @@ function StudentForm({ student, onSave, onCancel, defaultSettings }) {
                     onUpdate={(skipHolidays) => updateSubject(sub.id, { skipHolidays })}
                   />
                   
-                  {/* 캘린더에서 일정 직접 수정 (이동·추가·삭제·보강) */}
-                  <InteractiveScheduleCalendar
+                  {/* 회차 일정 변경 */}
+                  <ScheduleAdjustmentManager
                     subject={sub}
                     holidays={defaultSettings?.holidays}
-                    absences={(data.absences || []).filter(a => a.subjectId === sub.id)}
-                    onUpdate={(patch) => updateSubject(sub.id, patch)}
-                    cycleHistory={data.cycleHistory}
+                    onUpdate={(adjustments) => updateSubject(sub.id, { adjustments })}
                   />
-
-                  {/* 지난 일정(저장된 기록) 수정 — 편집 화면 안에서 바로 */}
-                  {hasHistFor(sub.name) && (
-                    <button
-                      type="button"
-                      onClick={() => setShowHistoryEdit(true)}
-                      className="mt-2 w-full px-3 py-2 bg-amber-100 hover:bg-amber-200 border-2 border-amber-300 rounded-lg text-sm font-bold text-amber-800"
-                    >
-                      📜 지난 일정(진행 캘린더) 수정하기 — 클릭으로 날짜 변경·삭제·추가·사유
-                    </button>
-                  )}
+                  
+                  {/* 보강 일정 추가 */}
+                  <MakeupManager
+                    subject={sub}
+                    holidays={defaultSettings?.holidays}
+                    onUpdate={(makeups) => updateSubject(sub.id, { makeups })}
+                  />
                 </div>
               ))}
               {(!data.subjects || data.subjects.length === 0) && (
@@ -3370,17 +2923,6 @@ function StudentForm({ student, onSave, onCancel, defaultSettings }) {
           <button onClick={handleSave} className="px-5 py-2 bg-blue-600 text-white rounded text-sm font-semibold">저장</button>
         </div>
       </div>
-
-      {/* 지난 일정 수정 창 (수정 모드로 바로 열림 — 여기서 고친 내용은 [저장] 시 함께 저장) */}
-      {showHistoryEdit && (
-        <ScheduleHistoryModal
-          student={data}
-          settings={defaultSettings}
-          startInEdit={true}
-          onClose={() => setShowHistoryEdit(false)}
-          onUpdateStudent={(patch) => setData({ ...data, ...patch })}
-        />
-      )}
     </div>
   );
 }
@@ -3552,18 +3094,9 @@ const createCycleSnapshot = (student, holidays, currentYearMonth) => {
     (student.subjects || []).forEach(sub => {
       const sd = parseDate(sub.startDate);
       let ed = null;
-      let schedule = []; // 실제 진행된 회차 일정 (이동·추가·삭제·사유 반영) — 월별 일정 조회용
       if (sd && sub.classDays?.length > 0) {
         const sessions = getClassSessions(sd, sub.classDays, sub.totalSessions, holidaySet, sub.skipHolidays);
-        if (sessions.length > 0) {
-          // 일정 변경이 반영된 실제 마지막 수업일로 이력 저장
-          const csStr = formatDateStr(sessions[0].date);
-          const ceStr = formatDateStr(sessions[sessions.length - 1].date);
-          const { finals } = applyScheduleAdjustments(sessions, sub.adjustments, { cycleStartStr: csStr, cycleEndStr: ceStr, addFrom: sub.startDate, addTo: '', holidaySet, classDays: sub.classDays, skipHolidays: sub.skipHolidays });
-          const lastStr = finals.length > 0 ? finals.map(f => f.dateStr).sort().pop() : ceStr;
-          ed = parseDate(lastStr);
-          schedule = finals.map(f => ({ num: f.num, date: f.dateStr, adjusted: !!(f.adjusted || f.holidayShifted), isExtra: !!f.isExtra, note: f.note || '' }));
-        }
+        if (sessions.length > 0) ed = sessions[sessions.length - 1].date;
       }
       if (sd) startDates.push(sd);
       if (ed) endDates.push(ed);
@@ -3573,9 +3106,6 @@ const createCycleSnapshot = (student, holidays, currentYearMonth) => {
         startDate: sub.startDate,
         endDate: ed ? formatDateStr(ed) : '',
         isMonthly: false,
-        schedule,
-        makeups: (sub.makeups || []).map(m => ({ date: m.date, note: m.note || '' })),
-        absences: (student.absences || []).filter(a => a.subjectId === sub.id).map(a => ({ date: a.date, note: a.note || '' })),
       });
     });
     if (startDates.length > 0) {
@@ -3639,586 +3169,20 @@ const advanceOneStudent = (student, holidays, currentYearMonth) => {
       if (!sub.startDate || !sub.classDays || sub.classDays.length === 0) return sub;
       const sessions = getClassSessions(parseDate(sub.startDate), sub.classDays, sub.totalSessions, holidaySet, sub.skipHolidays);
       if (sessions.length === 0) return sub;
-      // 일정 변경(이동·추가·삭제)이 반영된 실제 마지막 수업일 기준으로 다음 주기 시작 계산
-      const csStr = formatDateStr(sessions[0].date);
-      const ceStr = formatDateStr(sessions[sessions.length - 1].date);
-      const { finals } = applyScheduleAdjustments(sessions, sub.adjustments, { cycleStartStr: csStr, cycleEndStr: ceStr, addFrom: sub.startDate, addTo: '', holidaySet, classDays: sub.classDays, skipHolidays: sub.skipHolidays });
-      const lastStr = finals.length > 0 ? finals.map(f => f.dateStr).sort().pop() : ceStr;
-      const endDate = parseDate(lastStr);
+      const endDate = sessions[sessions.length - 1].date;
       const nextStart = getNextClassDay(endDate, sub.classDays, holidaySet);
       if (!nextStart) return sub;
       // 새 주기로 넘어가면 보강·일정변경 초기화 (지난 주기 것이므로)
-      // 지금 요일·회차를 '지난 주기' 값으로 기록 → 새 주기에서 요일을 바꿔도 지난 진행 캘린더가 안 변함
-      return { ...sub, startDate: formatDateStr(nextStart), adjustments: [], makeups: [], skipHolidays: [], prevClassDays: [...(sub.classDays || [])], prevTotalSessions: sub.totalSessions };
+      return { ...sub, startDate: formatDateStr(nextStart), adjustments: [], makeups: [], skipHolidays: [] };
     }),
   };
 };
-
-// 학생의 익월 등록 마감일 계산 (일정 변경·휴원일 이동 반영) — 수강료 안내 알림용
-const getRegistrationDeadline = (student, settings) => {
-  if (student.isWithdrawn || student.isSuspended) return null;
-  const holidaySet = new Set((settings.holidays || []).map(h => h.date));
-  if (student.isMonthly) {
-    if (!student.monthlyYearMonth) return null;
-    const [y, m] = student.monthlyYearMonth.split('-').map(Number);
-    if (!y || !m) return null;
-    return new Date(y, m, 0); // 대상 월의 말일
-  }
-  const nextStarts = [];
-  (student.subjects || []).forEach(sub => {
-    if (!sub.startDate || !sub.classDays || sub.classDays.length === 0) return;
-    const sessions = getClassSessions(parseDate(sub.startDate), sub.classDays, sub.totalSessions, holidaySet, sub.skipHolidays);
-    if (sessions.length === 0) return;
-    const csStr = formatDateStr(sessions[0].date);
-    const ceStr = formatDateStr(sessions[sessions.length - 1].date);
-    const { finals } = applyScheduleAdjustments(sessions, sub.adjustments, { cycleStartStr: csStr, cycleEndStr: ceStr, addFrom: sub.startDate, addTo: '', holidaySet, classDays: sub.classDays, skipHolidays: sub.skipHolidays });
-    const lastStr = finals.length > 0 ? finals.map(f => f.dateStr).sort().pop() : ceStr;
-    const nextStart = getNextClassDay(parseDate(lastStr), sub.classDays, holidaySet);
-    if (nextStart) nextStarts.push(nextStart);
-  });
-  if (nextStarts.length === 0) return null;
-  const earliest = new Date(Math.min(...nextStarts.map(d => d.getTime())));
-  return addDays(earliest, -1);
-};
-
-// 💳 결제 수단 목록 (납부 현황 드롭다운)
-const PAYMENT_METHODS = [
-  '카드(일반)',
-  '카드(캐시노트)',
-  '카드(동네학원 어플)',
-  '카드(백페이)',
-  '카카오뱅크 입금',
-  '동네학원 가상계좌',
-  '현금',
-];
-
-// 📩 학부모께 보낼 수강료 안내 문자 만들기 (카톡·문자에 붙여넣기용)
-const buildPaymentMessage = (student, settings, deadline, amount) => {
-  const lines = [
-    `[${settings.academyName}] ${student.name} 학생 등록 안내`,
-    '',
-    `안녕하세요, ${settings.academyName}입니다 😊`,
-    `${student.name} 학생의 등록 기간이 되어 안내드립니다.`,
-    '',
-  ];
-  if (deadline) lines.push(`· 등록 마감일: ${fmtKDate(deadline)}`);
-  if (amount) lines.push(`· 수강료: ${fmtWon(amount)}`);
-  if (settings.tuitionBankAccount) lines.push(`· 계좌: ${settings.tuitionBankName} ${settings.tuitionBankAccount} (예금주 ${settings.tuitionBankHolder})`);
-  lines.push('', '항상 믿고 맡겨주셔서 감사합니다 🙏');
-  return lines.join('\n');
-};
-
-const copyText = (text, okMsg) => {
-  if (navigator.clipboard && navigator.clipboard.writeText) {
-    navigator.clipboard.writeText(text).then(() => alert(okMsg || '📋 안내 문자가 복사됐어요!\n카톡 대화창에 붙여넣기(Ctrl+V) 하세요.')).catch(() => alert(text));
-  } else {
-    alert(text);
-  }
-};
-
-// 알림 계산 (마감 임박 + 마감 지난 미납) — 배너·알림 게시판 공용
-const computeTuitionAlerts = (students, settings) => {
-  const REMIND_DAYS = 5;
-  const todayStr = formatDateStr(new Date());
-  const today = parseDate(todayStr);
-  const todayYm = todayStr.slice(0, 7);
-  const items = [];      // 마감 임박 (안내 보낼 때)
-  const overdueUnpaid = []; // 마감 지남 + 미납
-  (students || []).forEach(s => {
-    const dl = getRegistrationDeadline(s, settings);
-    if (!dl) return;
-    const diff = Math.round((dl.getTime() - today.getTime()) / 86400000);
-    const dlYm = formatDateStr(dl).slice(0, 7);
-    const done = (p) => !!(p && (p.status === 'paid' || p.status === 'refunded')); // 완납·환불은 독촉 대상 아님
-    const isPaid = (s.payments && (done(s.payments[todayYm]) || done(s.payments[dlYm]))) || false;
-    const amount = (s.subjects || []).reduce((a, x) => a + (x.tuition || 0), 0) + (s.materials || []).reduce((a, x) => a + (x.amount || 0), 0);
-    if (diff < 0 && diff >= -60 && !isPaid) {
-      overdueUnpaid.push({ s, deadline: dl, diff, amount });
-    } else if (diff <= REMIND_DAYS && diff >= -7) {
-      items.push({ s, deadline: dl, diff, amount });
-    }
-  });
-  items.sort((a, b) => a.diff - b.diff);
-  overdueUnpaid.sort((a, b) => a.diff - b.diff);
-  return { items, overdueUnpaid, REMIND_DAYS };
-};
-
-// ⏰ 수강료 안내 알림 배너 (등록 마감 5일 전부터) + 🔴 마감 지난 미납 학생
-function TuitionReminderBanner({ students, settings, onGoStudent, onGoPayments }) {
-  const todayStr = formatDateStr(new Date());
-  const [dismissed, setDismissed] = useState(() => storage.get('tuition_remind_dismiss') === todayStr);
-
-  const { items, overdueUnpaid, REMIND_DAYS } = computeTuitionAlerts(students, settings);
-
-  if ((items.length === 0 && overdueUnpaid.length === 0) || dismissed) return null;
-
-  const dismissToday = () => {
-    storage.set('tuition_remind_dismiss', todayStr);
-    setDismissed(true);
-  };
-
-  const ddayLabel = (diff) => {
-    if (diff > 0) return { text: `D-${diff}`, cls: 'bg-amber-100 text-amber-800 border-amber-300' };
-    if (diff === 0) return { text: '오늘 마감!', cls: 'bg-rose-600 text-white border-rose-700' };
-    return { text: `${-diff}일 지남`, cls: 'bg-rose-100 text-rose-700 border-rose-300' };
-  };
-
-  return (
-    <div className="mb-4 border-2 border-amber-400 bg-amber-50 rounded-lg overflow-hidden">
-      <div className="flex items-center justify-between px-4 py-2 bg-amber-100">
-        <span className="text-sm font-bold text-amber-900">
-          ⏰ 수강료 알림
-          {items.length > 0 && <span className="ml-2">마감 임박 <span className="text-rose-600">{items.length}명</span></span>}
-          {overdueUnpaid.length > 0 && <span className="ml-2">· 🔴 마감 지난 미납 <span className="text-rose-600 font-extrabold">{overdueUnpaid.length}명</span></span>}
-        </span>
-        <button onClick={dismissToday} className="text-[11px] text-amber-700 hover:text-amber-900 underline">오늘 하루 그만 보기</button>
-      </div>
-
-      {/* 🔴 등록 마감일이 지났는데 미납인 학생 */}
-      {overdueUnpaid.length > 0 && (
-        <div className="px-4 py-2 space-y-1 bg-rose-50 border-b border-rose-200">
-          {overdueUnpaid.map(({ s, deadline, diff, amount }) => (
-            <div key={s.id} className="flex items-center gap-2 flex-wrap text-sm">
-              <span className="text-[11px] font-bold px-2 py-0.5 rounded-full border bg-rose-600 text-white border-rose-700">미납 {-diff}일째</span>
-              <span className="font-bold text-gray-800">{s.name}</span>
-              <span className="text-xs text-gray-600">마감 <strong>{fmtKDate(deadline)}</strong> · <strong className="text-rose-700">{fmtWon(amount)}</strong></span>
-              <span className="ml-auto flex gap-1">
-                <button onClick={() => copyText(buildPaymentMessage(s, settings, deadline, amount))} className="px-2.5 py-1 bg-yellow-500 hover:bg-yellow-600 text-white text-[11px] rounded font-semibold" title="학부모께 보낼 안내 문자를 복사해요">📩 문자 복사</button>
-                <button onClick={() => onGoStudent(s.id)} className="px-2.5 py-1 bg-amber-600 hover:bg-amber-700 text-white text-[11px] rounded font-semibold">📋 안내문</button>
-                <button onClick={onGoPayments} className="px-2.5 py-1 bg-rose-600 hover:bg-rose-700 text-white text-[11px] rounded font-semibold">💰 납부 현황</button>
-              </span>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* ⏰ 등록 마감 임박 (안내 보낼 때) */}
-      {items.length > 0 && (
-        <div className="px-4 py-2 space-y-1">
-          {items.map(({ s, deadline, diff, amount }) => {
-            const d = ddayLabel(diff);
-            return (
-              <div key={s.id} className="flex items-center gap-2 flex-wrap text-sm">
-                <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full border ${d.cls}`}>{d.text}</span>
-                <span className="font-bold text-gray-800">{s.name}</span>
-                <span className="text-xs text-gray-600">등록 마감일: <strong>{fmtKDate(deadline)}</strong></span>
-                <span className="ml-auto flex gap-1">
-                  <button onClick={() => copyText(buildPaymentMessage(s, settings, deadline, amount))} className="px-2.5 py-1 bg-yellow-500 hover:bg-yellow-600 text-white text-[11px] rounded font-semibold" title="학부모께 보낼 안내 문자를 복사해요">📩 문자 복사</button>
-                  <button onClick={() => onGoStudent(s.id)} className="px-2.5 py-1 bg-amber-600 hover:bg-amber-700 text-white text-[11px] rounded font-semibold">
-                    📋 안내문 보기
-                  </button>
-                </span>
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      <div className="px-4 py-1.5 bg-amber-100/60 text-[10px] text-amber-700">
-        💡 안내 후 <strong>"➡️ 다음 주기로 이동"</strong>하면 알림이 사라지고, 미납 알림은 <strong>납부완료 처리</strong>하면 사라집니다. 마감일 = 다음 주기 시작 전날 (일정 변경 반영).
-      </div>
-    </div>
-  );
-}
-
-// 🔔 알림 게시판 — 배너를 닫았어도 언제든 다시 보는 창
-function AlertBoardModal({ students, settings, onClose, onGoStudent, onGoPayments }) {
-  const { items, overdueUnpaid, REMIND_DAYS } = computeTuitionAlerts(students, settings);
-
-  const ddayLabel = (diff) => {
-    if (diff > 0) return { text: `D-${diff}`, cls: 'bg-amber-100 text-amber-800 border-amber-300' };
-    if (diff === 0) return { text: '오늘 마감!', cls: 'bg-rose-600 text-white border-rose-700' };
-    return { text: `${-diff}일 지남`, cls: 'bg-rose-100 text-rose-700 border-rose-300' };
-  };
-
-  return (
-    <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 overflow-y-auto" onClick={onClose}>
-      <div className="bg-white rounded-xl shadow-2xl w-full max-w-xl my-8 max-h-[85vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
-        <div className="invoice-navy text-white px-5 py-3 flex items-center justify-between sticky top-0 z-10">
-          <h2 className="text-base font-bold">🔔 알림 게시판</h2>
-          <button onClick={onClose} className="text-white/70 hover:text-white text-2xl leading-none">×</button>
-        </div>
-        <div className="p-4 space-y-4">
-          {overdueUnpaid.length === 0 && items.length === 0 && (
-            <div className="py-8 text-center text-gray-400 text-sm">
-              🎉 지금은 알림이 없어요!<br />
-              <span className="text-[11px]">등록 마감 {REMIND_DAYS}일 전 학생과 마감 지난 미납 학생이 여기에 표시됩니다.</span>
-            </div>
-          )}
-
-          {overdueUnpaid.length > 0 && (
-            <div>
-              <div className="text-sm font-bold text-rose-700 mb-1.5">🔴 마감 지난 미납 학생 ({overdueUnpaid.length}명)</div>
-              <div className="space-y-1 p-2 bg-rose-50 border border-rose-200 rounded">
-                {overdueUnpaid.map(({ s, deadline, diff, amount }) => (
-                  <div key={s.id} className="flex items-center gap-2 flex-wrap text-sm">
-                    <span className="text-[11px] font-bold px-2 py-0.5 rounded-full border bg-rose-600 text-white border-rose-700">미납 {-diff}일째</span>
-                    <span className="font-bold text-gray-800">{s.name}</span>
-                    <span className="text-xs text-gray-600">마감 <strong>{fmtKDate(deadline)}</strong> · <strong className="text-rose-700">{fmtWon(amount)}</strong></span>
-                    <span className="ml-auto flex gap-1">
-                      <button onClick={() => copyText(buildPaymentMessage(s, settings, deadline, amount))} className="px-2.5 py-1 bg-yellow-500 hover:bg-yellow-600 text-white text-[11px] rounded font-semibold" title="학부모께 보낼 안내 문자를 복사해요">📩 문자 복사</button>
-                      <button onClick={() => { onGoStudent(s.id); onClose(); }} className="px-2.5 py-1 bg-amber-600 hover:bg-amber-700 text-white text-[11px] rounded font-semibold">📋 안내문</button>
-                      <button onClick={() => { onGoPayments(); onClose(); }} className="px-2.5 py-1 bg-rose-600 hover:bg-rose-700 text-white text-[11px] rounded font-semibold">💰 납부 현황</button>
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {items.length > 0 && (
-            <div>
-              <div className="text-sm font-bold text-amber-800 mb-1.5">⏰ 등록 마감 임박 — 안내 보낼 학생 ({items.length}명)</div>
-              <div className="space-y-1 p-2 bg-amber-50 border border-amber-200 rounded">
-                {items.map(({ s, deadline, diff, amount }) => {
-                  const d = ddayLabel(diff);
-                  return (
-                    <div key={s.id} className="flex items-center gap-2 flex-wrap text-sm">
-                      <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full border ${d.cls}`}>{d.text}</span>
-                      <span className="font-bold text-gray-800">{s.name}</span>
-                      <span className="text-xs text-gray-600">등록 마감일: <strong>{fmtKDate(deadline)}</strong></span>
-                      <span className="ml-auto flex gap-1">
-                        <button onClick={() => copyText(buildPaymentMessage(s, settings, deadline, amount))} className="px-2.5 py-1 bg-yellow-500 hover:bg-yellow-600 text-white text-[11px] rounded font-semibold" title="학부모께 보낼 안내 문자를 복사해요">📩 문자 복사</button>
-                        <button onClick={() => { onGoStudent(s.id); onClose(); }} className="px-2.5 py-1 bg-amber-600 hover:bg-amber-700 text-white text-[11px] rounded font-semibold">📋 안내문 보기</button>
-                      </span>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-
-          <p className="text-[10px] text-gray-400">
-            💡 메인 화면 배너에서 "오늘 하루 그만 보기"를 눌렀어도 이 게시판(상단 🔔 버튼)에서는 언제든 다시 볼 수 있어요.
-            안내 후 "➡️ 다음 주기로 이동"하면 마감 알림이, 납부완료 처리하면 미납 알림이 사라집니다.
-          </p>
-        </div>
-      </div>
-    </div>
-  );
-}
 
 // ═══════════════════════════════════════════════════
 //  6. 학생 목록
 // ═══════════════════════════════════════════════════
 
-// ═══════════════════════════════════════════════════
-//  📆 학생별 월별 일정 조회 (저장된 이력 + 현재 일정)
-// ═══════════════════════════════════════════════════
-
-function ScheduleHistoryModal({ student, settings, onClose, onUpdateStudent, startInEdit }) {
-  if (!student) return null;
-  const holidayMap = new Map((settings.holidays || []).map(h => [h.date, h.label]));
-
-  // 모든 일정 항목 수집: 저장된 이력 우선, 현재 진행·계획 일정으로 보충
-  const entryMap = new Map(); // 과목|날짜|종류 → 항목
-  const addEntry = (e) => {
-    const key = e.subjectName + '|' + e.date + '|' + (e.isMakeup ? 'm' : 's');
-    if (!entryMap.has(key)) entryMap.set(key, e);
-  };
-
-  // 1) 저장된 이력 (다음 주기로 이동 시 자동 저장된 일정)
-  const historySubjects = new Set(); // 일정 기록이 있는 과목 → 지난 주기는 역산 대신 기록을 신뢰
-  (student.cycleHistory || []).forEach(h => {
-    (h.subjects || []).forEach(hs => {
-      if ((hs.schedule || []).length > 0) historySubjects.add(hs.name);
-      (hs.schedule || []).forEach(s => addEntry({
-        date: s.date, subjectName: hs.name, num: s.num,
-        adjusted: !!s.adjusted, isExtra: !!s.isExtra, note: s.note || '',
-        isMakeup: false,
-        absent: (hs.absences || []).some(a => a.date === s.date),
-        from: '기록', hId: h.id,
-      }));
-      (hs.makeups || []).forEach(m => addEntry({
-        date: m.date, subjectName: hs.name, isMakeup: true, note: m.note || '', from: '기록', hId: h.id,
-      }));
-    });
-  });
-
-  // 2) 현재 진행·계획 일정 (실시간 계산)
-  ['current', 'plan'].forEach(mode => {
-    try {
-      const { sessionMap } = buildSessionMap(student, settings, mode);
-      sessionMap.forEach((items, date) => items.forEach(it => {
-        // 지난 주기(진행)는 요일 패턴으로 역산한 추정치 — 정확한 기록이 있는 과목은 기록만 표시
-        // (단, 보강은 새로 입력된 것일 수 있으니 표시 — 중복은 키로 자동 제거)
-        if (mode === 'current' && historySubjects.has(it.subjectName) && !it.isMakeup) return;
-        addEntry({
-          date, subjectName: it.subjectName, num: it.sessionNum,
-          adjusted: !!it.adjusted, isExtra: !!it.isExtra,
-          note: it.isMakeup ? (it.makeupNote || '') : (it.note || ''),
-          isMakeup: !!it.isMakeup, absent: !!it.absent, from: '현재',
-        });
-      }));
-    } catch (e) { /* 일정 계산 불가 학생은 건너뜀 */ }
-  });
-
-  const entries = [...entryMap.values()];
-  const byDate = new Map();
-  entries.forEach(e => {
-    if (!byDate.has(e.date)) byDate.set(e.date, []);
-    byDate.get(e.date).push(e);
-  });
-  const months = [...new Set(entries.map(e => e.date.slice(0, 7)))].sort();
-
-  const [ym, setYm] = useState(() => {
-    const now = formatDateStr(new Date()).slice(0, 7);
-    if (months.includes(now)) return now;
-    const past = months.filter(m => m <= now);
-    return past.length > 0 ? past[past.length - 1] : (months[0] || now);
-  });
-
-  // ✏️ 지난 일정 수정 모드
-  const [editMode, setEditMode] = useState(!!startInEdit);
-  const [selEntry, setSelEntry] = useState(null);
-  const [editDate, setEditDate] = useState('');
-  const [editNote, setEditNote] = useState('');
-  const [addSubj, setAddSubj] = useState('');
-  const [addDate, setAddDate] = useState('');
-  const [addKind, setAddKind] = useState('session');
-  const [addNote, setAddNote] = useState('');
-
-  // 수정 가능한 지난 주기 목록 (이력 스냅샷의 과목들)
-  const editTargets = [];
-  (student.cycleHistory || []).forEach(h => {
-    (h.subjects || []).forEach(hs => {
-      if (hs.name) editTargets.push({ hId: h.id, name: hs.name, label: `${hs.name} (${h.periodLabel || h.yearMonth || '지난 주기'})` });
-    });
-  });
-
-  const renumSchedule = (sch) => [...sch].sort((a, b) => (a.date || '').localeCompare(b.date || '')).map((s, i) => ({ ...s, num: i + 1 }));
-
-  const updateHistory = (hId, subjName, updater) => {
-    const newHist = (student.cycleHistory || []).map(h => {
-      if (h.id !== hId) return h;
-      return { ...h, subjects: (h.subjects || []).map(hs => hs.name === subjName ? updater(hs) : hs) };
-    });
-    onUpdateStudent({ cycleHistory: newHist });
-  };
-
-  const applyEdit = () => {
-    const e = selEntry;
-    if (!e) return;
-    updateHistory(e.hId, e.subjectName, hs => {
-      if (e.isMakeup) {
-        return { ...hs, makeups: (hs.makeups || []).map(m => m.date === e.date ? { ...m, date: editDate || m.date, note: editNote } : m) };
-      }
-      let sch = (hs.schedule || []).map(s => (s.num === e.num && s.date === e.date)
-        ? { ...s, date: editDate || s.date, adjusted: s.adjusted || (!!editDate && editDate !== e.date), note: editNote }
-        : s);
-      return { ...hs, schedule: renumSchedule(sch) };
-    });
-    setSelEntry(null);
-  };
-
-  const deleteEntry = () => {
-    const e = selEntry;
-    if (!e) return;
-    if (!confirm(e.isMakeup ? '이 보강 기록을 삭제할까요?' : `${e.subjectName} ${e.num}회차 (${e.date}) 기록을 삭제할까요?`)) return;
-    updateHistory(e.hId, e.subjectName, hs => {
-      if (e.isMakeup) return { ...hs, makeups: (hs.makeups || []).filter(m => m.date !== e.date) };
-      return { ...hs, schedule: renumSchedule((hs.schedule || []).filter(s => !(s.num === e.num && s.date === e.date))) };
-    });
-    setSelEntry(null);
-  };
-
-  const applyAdd = () => {
-    if (!addSubj) { alert('추가할 과목(지난 주기)을 선택하세요'); return; }
-    if (!addDate) { alert('날짜를 선택하세요'); return; }
-    const sep = addSubj.indexOf('||');
-    const hId = addSubj.slice(0, sep);
-    const subjName = addSubj.slice(sep + 2);
-    updateHistory(hId, subjName, hs => {
-      if (addKind === 'makeup') return { ...hs, makeups: [...(hs.makeups || []), { date: addDate, note: addNote }] };
-      return { ...hs, schedule: renumSchedule([...(hs.schedule || []), { num: 0, date: addDate, adjusted: false, isExtra: true, note: addNote }]) };
-    });
-    setAddDate(''); setAddNote('');
-  };
-
-  const clickEntry = (e) => {
-    if (!editMode) return;
-    if (e.from !== '기록') {
-      alert('이 일정은 현재 주기(진행·계획)라 여기서 못 고쳐요.\n\n[학생 관리 → 편집 → 🖱️ 캘린더에서 일정 바로 수정]에서 고쳐주세요.\n여기서는 이미 넘긴 지난 일정만 수정합니다.');
-      return;
-    }
-    setSelEntry(e);
-    setEditDate(e.date);
-    setEditNote(e.note || '');
-  };
-  const isSelected = (e) => selEntry && selEntry.hId === e.hId && selEntry.date === e.date && selEntry.isMakeup === e.isMakeup && selEntry.num === e.num;
-
-  const ymIdx = months.indexOf(ym);
-  const year = parseInt(ym.slice(0, 4));
-  const month = parseInt(ym.slice(5, 7));
-  const weeks = buildMonthWeeks(year, month);
-
-  // 이 달 과목별 요약
-  const monthEntries = entries.filter(e => e.date.slice(0, 7) === ym);
-  const summary = new Map(); // 과목 → {nums:[], makeup:0, absent:0}
-  monthEntries.forEach(e => {
-    if (!summary.has(e.subjectName)) summary.set(e.subjectName, { nums: [], makeup: 0, absent: 0 });
-    const s = summary.get(e.subjectName);
-    if (e.isMakeup) s.makeup++;
-    else { s.nums.push(e.num); if (e.absent) s.absent++; }
-  });
-
-  return (
-    <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 overflow-y-auto" onClick={onClose}>
-      <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl my-8 max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
-        <div className="invoice-navy text-white px-5 py-3 flex items-center justify-between sticky top-0 z-10">
-          <h2 className="text-base font-bold">📆 {student.name} 학생 · 월별 수강 일정</h2>
-          <button onClick={onClose} className="text-white/70 hover:text-white text-2xl leading-none">×</button>
-        </div>
-
-        {months.length === 0 ? (
-          <div className="p-8 text-center text-gray-400 text-sm">
-            표시할 일정이 없습니다.<br />
-            <span className="text-[11px]">과목에 시작일·요일이 입력되어 있어야 일정이 계산돼요.</span>
-          </div>
-        ) : (
-          <div className="p-4">
-            {/* 월 이동 */}
-            <div className="flex items-center justify-center gap-2 mb-3">
-              <button
-                onClick={() => ymIdx > 0 && setYm(months[ymIdx - 1])}
-                disabled={ymIdx <= 0}
-                className={`px-3 py-1 rounded text-sm font-semibold ${ymIdx <= 0 ? 'bg-gray-100 text-gray-300' : 'bg-gray-100 hover:bg-gray-200 text-gray-700'}`}
-              >◀ 이전 달</button>
-              <select value={ym} onChange={(e) => setYm(e.target.value)} className="px-3 py-1 border rounded text-sm font-bold text-gray-800">
-                {months.map(m => <option key={m} value={m}>{m.slice(0, 4)}년 {m.slice(5, 7)}월</option>)}
-              </select>
-              <button
-                onClick={() => ymIdx < months.length - 1 && setYm(months[ymIdx + 1])}
-                disabled={ymIdx >= months.length - 1}
-                className={`px-3 py-1 rounded text-sm font-semibold ${ymIdx >= months.length - 1 ? 'bg-gray-100 text-gray-300' : 'bg-gray-100 hover:bg-gray-200 text-gray-700'}`}
-              >다음 달 ▶</button>
-              {editTargets.length > 0 && (
-                <button
-                  onClick={() => { setEditMode(!editMode); setSelEntry(null); }}
-                  className={`px-3 py-1 rounded text-sm font-semibold ${editMode ? 'bg-purple-600 text-white' : 'bg-purple-100 hover:bg-purple-200 text-purple-700'}`}
-                  title="다음 주기로 넘긴 뒤에도 지난 일정을 고칠 수 있어요"
-                >✏️ {editMode ? '수정 끝내기' : '지난 일정 수정'}</button>
-              )}
-            </div>
-
-            {/* 수정 모드: 선택 편집 패널 */}
-            {editMode && selEntry && (
-              <div className="mb-2 p-2 rounded border-2 border-purple-400 bg-purple-50 flex items-center gap-2 flex-wrap">
-                <span className="text-xs font-bold text-purple-900">
-                  {selEntry.isMakeup ? `🔵 ${selEntry.subjectName} 보강` : `📌 ${selEntry.subjectName} ${selEntry.num}회차`} · {selEntry.date}
-                </span>
-                <span className="flex items-center gap-1">
-                  <span className="text-[11px] text-gray-600">날짜:</span>
-                  <input type="date" value={editDate} onChange={(e) => setEditDate(e.target.value)} className="px-1.5 py-0.5 border rounded text-xs" />
-                </span>
-                <span className="flex items-center gap-1 flex-1 min-w-[140px]">
-                  <span className="text-[11px] text-gray-600">사유:</span>
-                  <input type="text" value={editNote} onChange={(e) => setEditNote(e.target.value)} placeholder="예: 제헌절 휴원" className="flex-1 px-1.5 py-0.5 border rounded text-xs" />
-                </span>
-                <span className="flex gap-1">
-                  <button onClick={applyEdit} className="px-2 py-1 bg-purple-600 text-white text-[11px] rounded font-semibold">저장</button>
-                  <button onClick={deleteEntry} className="px-2 py-1 bg-rose-600 text-white text-[11px] rounded font-semibold">🗑️ 삭제</button>
-                  <button onClick={() => setSelEntry(null)} className="px-2 py-1 bg-gray-300 text-gray-700 text-[11px] rounded">취소</button>
-                </span>
-              </div>
-            )}
-
-            {/* 수정 모드: 지난 회차·보강 추가 */}
-            {editMode && (
-              <div className="mb-2 p-2 bg-purple-50 border border-purple-200 rounded">
-                {!selEntry && (
-                  <div className="text-[11px] text-purple-700 mb-1.5">💡 달력에서 <strong>기록된 회차를 클릭</strong>하면 날짜·사유를 고치거나 삭제할 수 있어요. 빠진 수업은 아래에서 추가하세요.</div>
-                )}
-                <div className="flex items-center gap-1.5 flex-wrap">
-                  <span className="text-[11px] font-semibold text-purple-800">➕ 지난 일정 추가:</span>
-                  <select value={addSubj} onChange={(e) => setAddSubj(e.target.value)} className="px-1.5 py-1 border rounded text-xs">
-                    <option value="">과목(주기) 선택</option>
-                    {editTargets.map((t, i) => <option key={i} value={t.hId + '||' + t.name}>{t.label}</option>)}
-                  </select>
-                  <select value={addKind} onChange={(e) => setAddKind(e.target.value)} className="px-1.5 py-1 border rounded text-xs">
-                    <option value="session">수업 회차</option>
-                    <option value="makeup">🔵 보강</option>
-                  </select>
-                  <input type="date" value={addDate} onChange={(e) => setAddDate(e.target.value)} className="px-1.5 py-1 border rounded text-xs" />
-                  <input type="text" value={addNote} onChange={(e) => setAddNote(e.target.value)} placeholder="사유 (선택)" className="flex-1 min-w-[100px] px-1.5 py-1 border rounded text-xs" />
-                  <button onClick={applyAdd} className="px-2.5 py-1 bg-purple-600 hover:bg-purple-700 text-white text-[11px] rounded font-semibold">추가</button>
-                </div>
-              </div>
-            )}
-
-            {/* 달력 */}
-            <div className="grid grid-cols-7 gap-px bg-gray-300 border border-gray-300">
-              {DAY_NAMES_KO.map((day, i) => (
-                <div key={i} className="bg-gray-100 text-center text-[11px] font-semibold py-1" style={{ color: i === 0 ? '#dc2626' : i === 6 ? '#2563eb' : '#374151' }}>{day}</div>
-              ))}
-              {weeks.flat().map((date, idx) => {
-                const dstr = formatDateStr(date);
-                const isCurrentMonth = date.getMonth() === month - 1;
-                const holiday = holidayMap.get(dstr);
-                const dayEntries = (byDate.get(dstr) || []).slice().sort((a, b) => (a.subjectName || '').localeCompare(b.subjectName || '', 'ko'));
-                return (
-                  <div key={idx} className="flex flex-col items-center px-0.5 py-1 min-h-[56px] text-center" style={{ background: !isCurrentMonth ? '#f3f4f6' : holiday ? '#FEE2E2' : 'white', opacity: isCurrentMonth ? 1 : 0.4 }}>
-                    <div className="text-[11px] leading-none" style={{ color: holiday ? '#dc2626' : date.getDay() === 0 ? '#dc2626' : date.getDay() === 6 ? '#2563eb' : '#111827', fontWeight: holiday ? 700 : 500 }}>{date.getDate()}</div>
-                    {holiday && isCurrentMonth && <div className="text-[8px] text-red-600 font-bold leading-tight">{holiday}</div>}
-                    {isCurrentMonth && dayEntries.map((e, i) => {
-                      const color = resolveSubjectColor(e.subjectName, settings);
-                      const clickable = editMode && e.from === '기록';
-                      const selCls = isSelected(e) ? ' ring-2 ring-purple-500' : '';
-                      if (e.isMakeup) {
-                        return (
-                          <React.Fragment key={i}>
-                            <div onClick={() => clickEntry(e)} className={`text-[9px] font-extrabold leading-tight rounded px-0.5 mt-px${clickable ? ' cursor-pointer hover:opacity-70' : ''}${selCls}`} style={{ background: '#cffafe', color: '#0891b2' }}>🔵{e.subjectName}보강</div>
-                            {e.note && <div className="text-[7px] leading-tight" style={{ color: '#0e7490', wordBreak: 'keep-all' }}>{e.note}</div>}
-                          </React.Fragment>
-                        );
-                      }
-                      return (
-                        <React.Fragment key={i}>
-                          <div onClick={() => clickEntry(e)} className={`text-[9px] font-extrabold leading-tight rounded px-0.5 mt-px${clickable ? ' cursor-pointer hover:opacity-70' : ''}${selCls}`} style={{ background: color.bg, color: e.absent ? '#dc2626' : color.badge, textDecoration: e.absent ? 'line-through' : 'none' }}>
-                            {e.adjusted && '↪'}{e.isExtra && '➕'}{e.subjectName}{e.num}{e.absent && '결'}
-                          </div>
-                          {e.note && <div className="text-[7px] text-gray-500 leading-tight" style={{ wordBreak: 'keep-all' }}>{e.note}</div>}
-                        </React.Fragment>
-                      );
-                    })}
-                  </div>
-                );
-              })}
-            </div>
-
-            {/* 이 달 요약 */}
-            {summary.size > 0 && (
-              <div className="mt-3 p-3 bg-gray-50 border rounded">
-                <div className="text-xs font-bold text-gray-700 mb-1.5">📊 {year}년 {String(month).padStart(2, '0')}월 요약</div>
-                {[...summary.entries()].sort((a, b) => a[0].localeCompare(b[0], 'ko')).map(([name, s]) => {
-                  const color = resolveSubjectColor(name, settings);
-                  const nums = s.nums.sort((a, b) => a - b);
-                  return (
-                    <div key={name} className="flex items-center justify-between text-[11px] py-0.5">
-                      <span className="font-bold" style={{ color: color.badge }}>{name}</span>
-                      <span className="text-gray-600">
-                        {nums.length}회 {nums.length > 0 && `(${nums.join('·')}회차)`}
-                        {s.makeup > 0 && <span className="text-cyan-700 ml-1.5">보강 {s.makeup}회</span>}
-                        {s.absent > 0 && <span className="text-rose-600 ml-1.5">결석 {s.absent}회</span>}
-                      </span>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-
-            <p className="text-[10px] text-gray-400 mt-2 leading-relaxed">
-              💡 지난 일정은 <strong>"➡️ 다음 주기로 이동"을 누른 시점의 실제 일정</strong>(이동·추가·삭제·사유 포함)이 자동 저장된 것입니다.
-              이번 업데이트 이전에 넘긴 주기는 일정 기록이 없어 요일 패턴으로만 표시될 수 있어요.
-            </p>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function StudentListTab({ students, onAdd, onEdit, onDelete, onDuplicate, onSelect, selectedId, onBulkImport, onExportJSON, onImportJSON, onAdvanceAll, onAdvanceOne, onShowSchedule, onRestore }) {
+function StudentListTab({ students, onAdd, onEdit, onDelete, onDuplicate, onSelect, selectedId, onBulkImport, onExportJSON, onImportJSON, onAdvanceAll, onAdvanceOne }) {
   const [search, setSearch] = useState('');
   const [showMenu, setShowMenu] = useState(false);
   const [showWithdrawn, setShowWithdrawn] = useState(false); // 기본: 재원생만
@@ -4339,10 +3303,9 @@ function StudentListTab({ students, onAdd, onEdit, onDelete, onDuplicate, onSele
                         </span>
                       )}
                     </div>
-                    {(s.schoolName || s.grade || s.enrollDate) && (
+                    {(s.schoolName || s.grade) && (
                       <div className="text-[10px] text-gray-500 mt-0.5">
                         {s.schoolName}{s.schoolName && s.grade ? ' · ' : ''}{s.grade}
-                        {s.enrollDate && <span className="ml-1 text-indigo-500">🏫 {s.enrollDate} 등원</span>}
                       </div>
                     )}
                   </td>
@@ -4364,25 +3327,15 @@ function StudentListTab({ students, onAdd, onEdit, onDelete, onDuplicate, onSele
                   <td className="px-3 py-2 text-center">
                     <div className="flex gap-1 justify-center" onClick={(e) => e.stopPropagation()}>
                       <button onClick={() => onEdit(s.id)} className="px-2 py-1 text-xs bg-gray-100 hover:bg-gray-200 rounded">편집</button>
-                      <button onClick={() => onShowSchedule(s.id)} className="px-2 py-1 text-xs bg-indigo-100 hover:bg-indigo-200 text-indigo-700 rounded font-semibold" title="월별 수강 일정 조회">📆 일정</button>
                       <button onClick={() => onDuplicate(s.id)} className="px-2 py-1 text-xs bg-gray-100 hover:bg-gray-200 rounded">복제</button>
-                      {(s.isWithdrawn || s.isSuspended) ? (
-                        <button
-                          onClick={() => onRestore(s.id)}
-                          className="px-2 py-1 text-xs rounded bg-emerald-100 hover:bg-emerald-200 text-emerald-700 font-semibold"
-                          title="퇴원·휴원 해제하고 재원생으로 복귀 (정보·이력·납부 기록 그대로 유지)"
-                        >
-                          🔄 복귀
-                        </button>
-                      ) : (
-                        <button
-                          onClick={() => onAdvanceOne(s.id)}
-                          className="px-2 py-1 text-xs rounded bg-emerald-100 hover:bg-emerald-200 text-emerald-700 font-semibold"
-                          title="이 학생만 다음 주기(또는 다음 달)로 이동"
-                        >
-                          ➡️ 다음
-                        </button>
-                      )}
+                      <button
+                        onClick={() => onAdvanceOne(s.id)}
+                        disabled={s.isWithdrawn || s.isSuspended}
+                        className={`px-2 py-1 text-xs rounded ${(s.isWithdrawn || s.isSuspended) ? 'bg-gray-50 text-gray-300 cursor-not-allowed' : 'bg-emerald-100 hover:bg-emerald-200 text-emerald-700 font-semibold'}`}
+                        title={s.isWithdrawn ? '퇴원 학생은 주기 이동 불가' : s.isSuspended ? '휴원 학생은 주기 이동 불가' : '이 학생만 다음 주기(또는 다음 달)로 이동'}
+                      >
+                        ➡️ 다음
+                      </button>
                       <button onClick={() => { if (confirm(`${s.name} 학생을 삭제하시겠습니까?`)) onDelete(s.id); }} className="px-2 py-1 text-xs text-red-600 hover:bg-red-50 rounded">삭제</button>
                     </div>
                   </td>
@@ -6047,113 +5000,7 @@ function PolicyTab({ settings }) {
 //  7. 학원 정보 설정 탭
 // ═══════════════════════════════════════════════════
 
-// 👥 계정 관리 (학원 정보 탭) — 명단 추가/삭제 + 내 비밀번호 변경
-function AccountManager({ cloudUser, isAdmin }) {
-  const [list, setList] = useState(null);
-  const [newEmail, setNewEmail] = useState('');
-  const [newIsAdmin, setNewIsAdmin] = useState(false);
-  const [newPw, setNewPw] = useState('');
-  const [busy, setBusy] = useState(false);
-
-  const loadList = async () => {
-    const { data, error } = await sb.from('allowed_emails').select('*').order('added_at');
-    if (!error) setList(data || []);
-  };
-  useEffect(() => { if (isAdmin) loadList(); }, [isAdmin]);
-
-  const addEmail = async () => {
-    const em = newEmail.trim().toLowerCase();
-    if (!em || !em.includes('@')) { alert('이메일을 정확히 입력하세요'); return; }
-    setBusy(true);
-    const { error } = await sb.from('allowed_emails').insert({ email: em, is_admin: newIsAdmin });
-    setBusy(false);
-    if (error) { alert('추가 실패: ' + (error.message.includes('duplicate') ? '이미 명단에 있는 이메일이에요' : error.message)); return; }
-    setNewEmail(''); setNewIsAdmin(false);
-    loadList();
-    alert(`✅ ${em} 이 명단에 추가됐어요.\n\n그 선생님께 이렇게 안내하세요:\n"사이트 접속 → [처음 계정 만들기] 탭에서 이 이메일로 비밀번호를 만들면 바로 사용 가능"`);
-  };
-
-  const removeEmail = async (em) => {
-    if (em === cloudUser.email) { alert('본인 계정은 삭제할 수 없어요'); return; }
-    if (!confirm(`${em} 을 명단에서 삭제할까요?\n삭제하면 그 계정은 더 이상 데이터를 볼 수 없습니다.`)) return;
-    const { error } = await sb.from('allowed_emails').delete().eq('email', em);
-    if (error) { alert('삭제 실패: ' + error.message); return; }
-    loadList();
-  };
-
-  const toggleAdmin = async (em, cur) => {
-    if (em === cloudUser.email && cur) { alert('본인의 관리자 권한은 해제할 수 없어요'); return; }
-    const { error } = await sb.from('allowed_emails').update({ is_admin: !cur }).eq('email', em);
-    if (error) { alert('변경 실패: ' + error.message); return; }
-    loadList();
-  };
-
-  const changeMyPw = async () => {
-    if (newPw.length < 6) { alert('비밀번호는 6자 이상으로 만들어주세요'); return; }
-    setBusy(true);
-    const { error } = await sb.auth.updateUser({ password: newPw });
-    setBusy(false);
-    if (error) { alert('변경 실패: ' + error.message); return; }
-    setNewPw('');
-    alert('✅ 비밀번호가 변경됐어요. 다음 로그인부터 새 비밀번호를 쓰세요.');
-  };
-
-  return (
-    <Section title="👥 계정 관리 (데이터 공유)">
-      <div className="text-xs text-gray-500 mb-3">
-        지금 로그인: <strong className="text-gray-700">{cloudUser.email}</strong>{isAdmin && <span className="ml-1 text-[10px] px-1.5 py-0.5 bg-indigo-100 text-indigo-700 rounded font-bold">관리자</span>}
-      </div>
-
-      {/* 내 비밀번호 변경 (모두 가능) */}
-      <div className="mb-4 p-3 bg-gray-50 border rounded">
-        <div className="text-xs font-semibold text-gray-700 mb-1.5">🔑 내 비밀번호 변경</div>
-        <div className="flex gap-2 items-center flex-wrap">
-          <input type="password" value={newPw} onChange={(e) => setNewPw(e.target.value)} placeholder="새 비밀번호 (6자 이상)" className="px-3 py-1.5 border rounded text-sm flex-1 min-w-[160px]" />
-          <button onClick={changeMyPw} disabled={busy} className="px-3 py-1.5 bg-blue-600 text-white rounded text-xs font-semibold">변경</button>
-        </div>
-      </div>
-
-      {isAdmin ? (
-        <div className="p-3 bg-indigo-50 border border-indigo-200 rounded">
-          <div className="text-xs font-semibold text-indigo-800 mb-1.5">✉️ 사용 허용 명단 (선생님 추가는 여기서!)</div>
-          <div className="flex gap-2 items-center flex-wrap mb-2">
-            <input type="email" value={newEmail} onChange={(e) => setNewEmail(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && addEmail()} placeholder="선생님 이메일" className="px-3 py-1.5 border rounded text-sm flex-1 min-w-[180px]" />
-            <label className="flex items-center gap-1 text-xs text-gray-600 cursor-pointer">
-              <input type="checkbox" checked={newIsAdmin} onChange={(e) => setNewIsAdmin(e.target.checked)} className="w-4 h-4" /> 관리자로
-            </label>
-            <button onClick={addEmail} disabled={busy} className="px-3 py-1.5 bg-indigo-600 text-white rounded text-xs font-semibold">+ 추가</button>
-          </div>
-          {list === null ? (
-            <div className="text-xs text-gray-400">명단 불러오는 중… (안 나오면 아래 안내의 SQL을 실행해주세요)</div>
-          ) : (
-            <div className="space-y-1">
-              {list.map(row => (
-                <div key={row.email} className="flex items-center gap-2 bg-white border rounded px-2 py-1.5 text-sm">
-                  <span className="font-medium text-gray-800">{row.email}</span>
-                  {row.email === cloudUser.email && <span className="text-[10px] text-gray-400">(나)</span>}
-                  <button
-                    onClick={() => toggleAdmin(row.email, row.is_admin)}
-                    className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${row.is_admin ? 'bg-indigo-100 text-indigo-700' : 'bg-gray-100 text-gray-400 hover:bg-gray-200'}`}
-                    title="클릭하면 관리자 권한이 켜지고 꺼져요"
-                  >{row.is_admin ? '관리자' : '일반'}</button>
-                  <button onClick={() => removeEmail(row.email)} className="ml-auto text-rose-500 hover:bg-rose-50 rounded px-1.5 text-xs">삭제</button>
-                </div>
-              ))}
-            </div>
-          )}
-          <p className="text-[10px] text-indigo-600/80 mt-2 leading-relaxed">
-            💡 추가한 이메일의 선생님은 <strong>로그인 화면 → [처음 계정 만들기]</strong>에서 스스로 비밀번호를 만들어 시작합니다.
-            명단에 없는 이메일은 계정을 만들어도 데이터를 볼 수 없어요.
-          </p>
-        </div>
-      ) : (
-        <p className="text-[11px] text-gray-400">선생님 계정 추가·삭제는 관리자만 할 수 있어요.</p>
-      )}
-    </Section>
-  );
-}
-
-function SettingsTab({ settings, setSettings, students, cloudUser, isAdmin }) {
+function SettingsTab({ settings, setSettings, students }) {
   const update = (k, v) => setSettings({ ...settings, [k]: v });
   const updateList = (k, idx, v) => {
     const arr = [...(settings[k] || [])];
@@ -6165,8 +5012,6 @@ function SettingsTab({ settings, setSettings, students, cloudUser, isAdmin }) {
 
   return (
     <div className="max-w-3xl space-y-4">
-      {sb && cloudUser && <AccountManager cloudUser={cloudUser} isAdmin={isAdmin} />}
-
       <Section title="학원 기본 정보">
         <Row label="학원명 (한글)"><input type="text" value={settings.academyName} onChange={(e) => update('academyName', e.target.value)} className="input" /></Row>
         <Row label="학원명 (영문)"><input type="text" value={settings.academyNameEn} onChange={(e) => update('academyNameEn', e.target.value)} className="input" /></Row>
@@ -6376,152 +5221,7 @@ function StatCard({ title, value, color = 'gray' }) {
   );
 }
 
-// 📜 학생 한 명의 전체 납부 이력 (월별) — 바로 수정 가능
-function PaymentHistoryModal({ student, onClose, onUpdate }) {
-  const [newYm, setNewYm] = useState('');
-  if (!student) return null;
-  // 납부 기록이 있는 달 + 주기 이력이 있는 달을 모두 모음
-  const monthSet = new Set(Object.keys(student.payments || {}));
-  (student.cycleHistory || []).forEach(h => { if (h.yearMonth) monthSet.add(h.yearMonth); });
-  const currentAmount = (student.subjects || []).reduce((a, x) => a + (x.tuition || 0), 0) + (student.materials || []).reduce((a, x) => a + (x.amount || 0), 0);
-  const nowYm = formatDateStr(new Date()).slice(0, 7);
-
-  const rows = [...monthSet].sort().reverse().map(ym => {
-    const p = (student.payments || {})[ym];
-    const hists = (student.cycleHistory || []).filter(h => h.yearMonth === ym);
-    const hist = hists.length > 0 ? hists[hists.length - 1] : null;
-    return {
-      ym,
-      period: hist ? hist.periodLabel : '',
-      amount: hist ? hist.totalAmount : (ym === nowYm ? currentAmount : null),
-      status: p ? p.status : (hist && hist.payment ? hist.payment.status : 'pending'),
-      paidDate: (p && p.paidDate) || (hist && hist.payment && hist.payment.paidDate) || '',
-      dueDate: (p && p.dueDate) || '',
-      method: (p && p.method) || '',
-      note: (p && p.note) || '',
-    };
-  });
-  const paidTotal = rows.filter(r => r.status === 'paid' && r.amount).reduce((a, r) => a + r.amount, 0);
-
-  return (
-    <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 overflow-y-auto" onClick={onClose}>
-      <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl my-8 max-h-[85vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
-        <div className="invoice-navy text-white px-5 py-3 flex items-center justify-between sticky top-0 z-10">
-          <h2 className="text-base font-bold">
-            📜 {student.name} · 납부 이력
-            {(student.isWithdrawn || student.isSuspended) && (
-              <span className="ml-2 text-[10px] px-1.5 py-0.5 bg-white/20 rounded">{student.isWithdrawn ? '퇴원' : '휴원'}</span>
-            )}
-          </h2>
-          <button onClick={onClose} className="text-white/70 hover:text-white text-2xl leading-none">×</button>
-        </div>
-        <div className="p-4">
-          {rows.length === 0 && (
-            <div className="py-6 text-center text-gray-400 text-sm">납부 기록이 아직 없습니다.<br /><span className="text-[11px]">아래에서 달을 골라 지난 기록을 직접 추가할 수 있어요.</span></div>
-          )}
-          {rows.length > 0 && (
-            <table className="w-full text-sm">
-              <thead className="bg-gray-50 border-b">
-                <tr>
-                  <th className="px-2 py-1.5 text-left font-semibold text-gray-700">월</th>
-                  <th className="px-2 py-1.5 text-left font-semibold text-gray-700">청구 기간 · 메모</th>
-                  <th className="px-2 py-1.5 text-right font-semibold text-gray-700">금액</th>
-                  <th className="px-2 py-1.5 text-center font-semibold text-gray-700">청구일</th>
-                  <th className="px-2 py-1.5 text-center font-semibold text-gray-700">상태</th>
-                  <th className="px-2 py-1.5 text-center font-semibold text-gray-700">납부일</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map(r => (
-                  <tr key={r.ym} className={`border-b ${r.status === 'paid' ? 'bg-green-50/40' : ''}`}>
-                    <td className="px-2 py-1.5 font-bold text-gray-800 whitespace-nowrap align-top">{r.ym.slice(0, 4)}.{r.ym.slice(5, 7)}</td>
-                    <td className="px-2 py-1.5 text-[11px] text-gray-500 align-top">
-                      {r.period || '—'}
-                      <input
-                        type="text"
-                        value={r.note}
-                        onChange={(e) => onUpdate(r.ym, { note: e.target.value })}
-                        placeholder="메모"
-                        className="mt-0.5 w-full px-1.5 py-0.5 border rounded text-[11px]"
-                      />
-                    </td>
-                    <td className="px-2 py-1.5 text-right text-gray-700 whitespace-nowrap align-top">{r.amount != null ? fmtWon(r.amount) : '—'}</td>
-                    <td className="px-2 py-1.5 text-center align-top">
-                      <input
-                        type="date"
-                        value={r.dueDate || ''}
-                        onChange={(e) => onUpdate(r.ym, { dueDate: e.target.value })}
-                        className="text-[11px] px-1 py-0.5 border rounded"
-                        title="교습비 청구일"
-                      />
-                    </td>
-                    <td className="px-2 py-1.5 text-center align-top">
-                      <select
-                        value={r.status === 'paid' ? 'paid' : r.status === 'refunded' ? 'refunded' : 'pending'}
-                        onChange={(e) => onUpdate(r.ym, e.target.value === 'paid'
-                          ? { status: 'paid', paidDate: r.paidDate || formatDateStr(new Date()) }
-                          : e.target.value === 'pending'
-                            ? { status: 'pending', paidDate: '' }
-                            : { status: 'refunded' })}
-                        className={`text-[11px] font-bold px-1.5 py-0.5 rounded border cursor-pointer ${r.status === 'paid' ? 'text-green-700 bg-green-100 border-green-300' : r.status === 'refunded' ? 'text-purple-700 bg-purple-100 border-purple-300' : 'text-rose-700 bg-rose-100 border-rose-300'}`}
-                      >
-                        <option value="pending">미납</option>
-                        <option value="paid">✓ 완납</option>
-                        <option value="refunded">↩ 환불</option>
-                      </select>
-                      <select
-                        value={r.method || ''}
-                        onChange={(e) => onUpdate(r.ym, { method: e.target.value })}
-                        className={`mt-1 block mx-auto text-[10px] px-1 py-0.5 border rounded max-w-[110px] ${r.method ? 'text-gray-700' : 'text-gray-400'}`}
-                        title="결제 수단"
-                      >
-                        <option value="">수단 —</option>
-                        {PAYMENT_METHODS.map(m => <option key={m} value={m}>{m}</option>)}
-                      </select>
-                    </td>
-                    <td className="px-2 py-1.5 text-center align-top">
-                      <input
-                        type="date"
-                        value={r.paidDate || ''}
-                        onChange={(e) => onUpdate(r.ym, { paidDate: e.target.value })}
-                        className="text-[11px] px-1 py-0.5 border rounded"
-                      />
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-
-          {/* 지난 달 기록 직접 추가 */}
-          <div className="mt-3 p-2 bg-indigo-50 border border-indigo-200 rounded flex items-center gap-2 flex-wrap">
-            <span className="text-[11px] font-semibold text-indigo-800">➕ 지난 달 기록 추가:</span>
-            <input type="month" value={newYm} onChange={(e) => setNewYm(e.target.value)} className="px-2 py-1 border rounded text-xs" />
-            <button
-              onClick={() => {
-                if (!newYm) { alert('추가할 달을 선택하세요'); return; }
-                if (monthSet.has(newYm)) { alert('이미 목록에 있는 달이에요. 표에서 바로 수정하세요.'); return; }
-                onUpdate(newYm, { status: 'pending', paidDate: '', note: '' });
-                setNewYm('');
-              }}
-              className="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-700 text-white text-[11px] rounded font-semibold"
-            >추가</button>
-            <span className="text-[10px] text-indigo-600">예: 작년 12월 납부 기록을 지금 넣고 싶을 때</span>
-          </div>
-
-          {rows.length > 0 && (
-            <div className="mt-2 text-right text-xs text-gray-600">
-              완납 합계: <strong className="text-green-700">{fmtWon(paidTotal)}</strong>
-            </div>
-          )}
-          <p className="text-[10px] text-gray-400 mt-1">상태·납부일·메모는 여기서 바로 수정되고 자동 저장됩니다. 청구 기간·금액은 "다음 주기로 이동" 시 저장된 이력 기준이라 이력 없는 달은 — 로 표시될 수 있어요.</p>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function PaymentTab({ students, setStudents, privacyMode, settings }) {
+function PaymentTab({ students, setStudents, privacyMode }) {
   const pmask = (val, suffix = '') => privacyMode ? '•••' : `${val.toLocaleString()}${suffix}`;
   const [yearMonth, setYearMonth] = useState(() => {
     const d = new Date();
@@ -6529,32 +5229,9 @@ function PaymentTab({ students, setStudents, privacyMode, settings }) {
   });
   const [filter, setFilter] = useState('all');
   const [search, setSearch] = useState('');
-  const [includeInactive, setIncludeInactive] = useState(false); // 퇴원·휴원생 포함 (이력 조회용)
-  const [historyStudent, setHistoryStudent] = useState(null);
-  const [expandedId, setExpandedId] = useState(null); // 💳 분할 결제 내역 펼친 학생
 
   const getPayment = (s) => (s.payments && s.payments[yearMonth]) || { status: 'pending', paidDate: '', note: '' };
-  // 이 달 청구 금액: ① 직접 수정한 금액 → ② 그 달 주기 이력의 실제 청구액 → ③ 현재 과목 합계
-  const getAmount = (s) => {
-    const p = s.payments && s.payments[yearMonth];
-    if (p && p.amountOverride != null && p.amountOverride !== '') return Number(p.amountOverride) || 0;
-    const hists = (s.cycleHistory || []).filter(h => h.yearMonth === yearMonth && typeof h.totalAmount === 'number');
-    if (hists.length > 0) return hists[hists.length - 1].totalAmount;
-    return (s.subjects || []).reduce((a, x) => a + (x.tuition || 0), 0) + (s.materials || []).reduce((a, x) => a + (x.amount || 0), 0);
-  };
-  // 이 달 금액 직접 수정 (안 듣는 과목 제외 등)
-  const editAmount = (s) => {
-    const cur = getAmount(s);
-    const v = prompt(
-      `${s.name} 학생의 ${parseInt(yearMonth.slice(5))}월 청구 금액을 입력하세요.\n` +
-      `(이번 달 안 듣는 과목이 있으면 그만큼 뺀 금액으로)\n\n` +
-      `숫자만 입력 · 비우고 [확인]하면 자동 계산으로 돌아갑니다.`,
-      String(cur)
-    );
-    if (v === null) return;
-    const digits = v.replace(/[^0-9]/g, '');
-    updatePayment(s.id, { amountOverride: digits === '' ? '' : Number(digits) });
-  };
+  const getAmount = (s) => (s.subjects || []).reduce((a, x) => a + (x.tuition || 0), 0) + (s.materials || []).reduce((a, x) => a + (x.amount || 0), 0);
 
   const updatePayment = (studentId, patch) => {
     setStudents(students.map(s => {
@@ -6570,41 +5247,12 @@ function PaymentTab({ students, setStudents, privacyMode, settings }) {
     }));
   };
 
-  // 임의의 달 납부 기록 수정 (납부 이력 모달에서 사용 — 지난 달 추가·수정)
-  const updatePaymentForMonth = (studentId, ym, patch) => {
-    setStudents(students.map(s => {
-      if (s.id !== studentId) return s;
-      const current = (s.payments && s.payments[ym]) || { status: 'pending', paidDate: '', note: '' };
-      return {
-        ...s,
-        payments: {
-          ...(s.payments || {}),
-          [ym]: { ...current, ...patch },
-        },
-      };
-    }));
-  };
-
-  // ⚡ 자동 청구일: "지금 보고 있는 달"에 해당하는 주기의 시작일을 찾아줌
-  const autoDueForMonth = (s) => {
-    const starts = [];
-    (s.subjects || []).forEach(sub => { if (sub.startDate) starts.push(sub.startDate); });
-    (s.cycleHistory || []).forEach(h => (h.subjects || []).forEach(hs => { if (hs.startDate) starts.push(hs.startDate); }));
-    // 1순위: 이 달에 시작한 주기의 시작일 (= 그 주기 청구 기준일)
-    const inMonth = starts.filter(d => d.slice(0, 7) === yearMonth).sort();
-    if (inMonth.length > 0) return inMonth[0];
-    // 2순위: 등록 마감일이 이 달에 있으면 그 날
-    const dl = getRegistrationDeadline(s, settings || DEFAULT_SETTINGS);
-    if (dl && formatDateStr(dl).slice(0, 7) === yearMonth) return formatDateStr(dl);
-    return null;
-  };
-
-  // 상태 변경: 미납 / 납부완료 / 환불
-  const setPayStatus = (s, st) => {
+  const togglePaid = (s) => {
     const current = getPayment(s);
+    const isPaid = current.status === 'paid';
     updatePayment(s.id, {
-      status: st,
-      paidDate: st === 'paid' ? (current.paidDate || formatDateStr(new Date())) : (st === 'pending' ? '' : current.paidDate),
+      status: isPaid ? 'pending' : 'paid',
+      paidDate: isPaid ? '' : formatDateStr(new Date()),
     });
   };
 
@@ -6623,76 +5271,25 @@ function PaymentTab({ students, setStudents, privacyMode, settings }) {
     }));
   };
 
-  // 선택한 달에 등록(재원)했던 학생인지 판단 — 그 달 이전에 온 적 없거나 퇴원 이후인 학생은 제외
-  const prevYmOf = (ym) => {
-    const [y, m] = ym.split('-').map(Number);
-    const d = new Date(y, m - 2, 1);
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-  };
-  // 실제 내용이 있는 납부 기록인지 (실수 클릭으로 생긴 빈 기록은 무시)
-  const isRealPayment = (p) => !!(p && (p.status === 'paid' || p.status === 'refunded' || p.paidDate || p.dueDate || p.method || (p.items && p.items.length > 0) || (p.amountOverride != null && p.amountOverride !== '') || (p.note && p.note.trim())));
-  // 그 달 전체가 휴원(쉼) 기간에 포함되는지 — 과거 휴원 기록 + 현재 휴원 모두 확인
-  const isMonthInRestGap = (s, ym) => {
-    const gaps = [...(s.suspendHistory || [])];
-    if (s.isSuspended && s.suspendStart) gaps.push({ start: s.suspendStart, end: s.suspendEnd || '' });
-    if (gaps.length === 0) return false;
-    const [yy, mm] = ym.split('-').map(Number);
-    const monthStart = ym + '-01';
-    const monthEnd = formatDateStr(new Date(yy, mm, 0));
-    // 달 전체가 쉼 기간 안에 있을 때만 제외 (일부만 걸친 달은 청구 대상일 수 있어 표시)
-    return gaps.some(g => g && g.start && g.start <= monthStart && (g.end || '9999-12-31') >= monthEnd);
-  };
-  const isEnrolledInMonth = (s, ym) => {
-    if (s.payments && isRealPayment(s.payments[ym])) return true; // 그 달에 실제 납부 기록이 있으면 표시
-    if (isMonthInRestGap(s, ym)) return false; // 통째로 쉰 달은 제외
-    // 첫 등원일이 입력되어 있으면 그게 기준 (가장 정확)
-    if (s.enrollDate) {
-      if (ym < s.enrollDate.slice(0, 7)) return false;
-      if (s.isWithdrawn && s.withdrawnDate && ym > s.withdrawnDate.slice(0, 7)) return false;
-      return true;
-    }
-    const known = [];
-    Object.keys(s.payments || {}).forEach(k => { if (isRealPayment(s.payments[k])) known.push(k); });
-    (s.cycleHistory || []).forEach(h => {
-      if (h.yearMonth) known.push(h.yearMonth);
-      (h.subjects || []).forEach(hs => { if (hs.startDate) known.push(hs.startDate.slice(0, 7)); });
-    });
-    (s.subjects || []).forEach(sub => {
-      if (sub.startDate) {
-        const m = sub.startDate.slice(0, 7);
-        known.push(sub.isNew ? m : prevYmOf(m)); // 신규가 아니면 지난 주기(약 한 달 전)부터 재원으로 간주
-      }
-    });
-    if (known.length === 0) return true; // 판단할 정보가 없으면 표시
-    const first = known.sort()[0];
-    if (ym < first) return false; // 등록 전 달
-    if (s.isWithdrawn && s.withdrawnDate && ym > s.withdrawnDate.slice(0, 7)) return false; // 퇴원 다음 달부터 제외
-    return true;
-  };
+  // 재원생만 대상 (퇴원·휴원생은 납부 대상 아님)
+  const activeStudents = students.filter(s => !s.isWithdrawn && !s.isSuspended);
 
-  // 재원생만 대상 (퇴원·휴원생은 납부 대상 아님 — 통계 기준). 선택한 달 재원생만.
-  const activeStudents = students.filter(s => !s.isWithdrawn && !s.isSuspended && isEnrolledInMonth(s, yearMonth));
-
-  // 목록은 옵션에 따라 퇴원·휴원생 포함 (과거 납부 이력 조회용) — 역시 그 달 재원생만
-  const listBase = includeInactive ? students.filter(s => isEnrolledInMonth(s, yearMonth)) : activeStudents;
-  const filtered = sortStudentsByName(listBase.filter(s => {
+  const filtered = sortStudentsByName(activeStudents.filter(s => {
     if (search && !s.name.includes(search)) return false;
-    const st = getPayment(s).status || 'pending';
-    if (filter === 'paid') return st === 'paid';
-    if (filter === 'unpaid') return st !== 'paid' && st !== 'refunded';
-    if (filter === 'refunded') return st === 'refunded';
+    const p = getPayment(s);
+    if (filter === 'paid') return p.status === 'paid';
+    if (filter === 'unpaid') return p.status !== 'paid';
     return true;
   }));
 
-  const stOf = (s) => getPayment(s).status || 'pending';
-  const paidCount = activeStudents.filter(s => stOf(s) === 'paid').length;
-  const refundedCount = activeStudents.filter(s => stOf(s) === 'refunded').length;
-  const unpaidCount = activeStudents.length - paidCount - refundedCount;
-  const paidAmount = activeStudents.filter(s => stOf(s) === 'paid').reduce((sum, s) => sum + getAmount(s), 0);
-  const unpaidAmount = activeStudents.filter(s => stOf(s) !== 'paid' && stOf(s) !== 'refunded').reduce((sum, s) => sum + getAmount(s), 0);
+  const paidCount = activeStudents.filter(s => getPayment(s).status === 'paid').length;
+  const unpaidCount = activeStudents.length - paidCount;
+  const totalAmount = activeStudents.reduce((sum, s) => sum + getAmount(s), 0);
+  const paidAmount = activeStudents.filter(s => getPayment(s).status === 'paid').reduce((sum, s) => sum + getAmount(s), 0);
+  const unpaidAmount = totalAmount - paidAmount;
 
   const copyUnpaidList = () => {
-    const unpaid = sortStudentsByName(activeStudents.filter(s => stOf(s) !== 'paid' && stOf(s) !== 'refunded'));
+    const unpaid = sortStudentsByName(activeStudents.filter(s => getPayment(s).status !== 'paid'));
     if (unpaid.length === 0) { alert('미납자 없음'); return; }
     const text = unpaid.map(s => `${s.name} - ${fmtWon(getAmount(s))}`).join('\n');
     if (navigator.clipboard) {
@@ -6717,17 +5314,13 @@ function PaymentTab({ students, setStudents, privacyMode, settings }) {
         <div>
           <label className="block text-[11px] text-gray-500 mb-0.5">필터</label>
           <div className="flex gap-1">
-            {[['all', '전체'], ['paid', '✓ 납부완료'], ['unpaid', '⚠ 미납'], ['refunded', '↩ 환불']].map(([k, l]) => (
+            {[['all', '전체'], ['paid', '✓ 납부완료'], ['unpaid', '⚠ 미납']].map(([k, l]) => (
               <button key={k} onClick={() => setFilter(k)} className={`px-3 py-1.5 rounded text-xs font-semibold transition ${filter === k ? 'invoice-navy text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}>
                 {l}
               </button>
             ))}
           </div>
         </div>
-        <label className="flex items-center gap-1.5 text-xs text-gray-600 cursor-pointer pb-1.5">
-          <input type="checkbox" checked={includeInactive} onChange={(e) => setIncludeInactive(e.target.checked)} className="w-4 h-4" />
-          퇴원·휴원 포함
-        </label>
         <div className="flex-1"></div>
         <div className="flex gap-1">
           <button onClick={copyUnpaidList} className="px-3 py-1.5 bg-orange-500 text-white rounded text-xs font-semibold hover:bg-orange-600">📋 미납자 목록 복사</button>
@@ -6737,10 +5330,10 @@ function PaymentTab({ students, setStudents, privacyMode, settings }) {
 
       {/* 통계 */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <StatCard title="이 달 재원생" value={privacyMode ? '••• ' : `${activeStudents.length}명`} color="blue" />
+        <StatCard title="전체 학생" value={privacyMode ? '••• ' : `${students.length}명`} color="blue" />
         <StatCard title="납부 완료" value={privacyMode ? '•••' : `${paidCount}명 · ${fmtWon(paidAmount)}`} color="green" />
-        <StatCard title="미납" value={privacyMode ? '•••' : `${unpaidCount}명 · ${fmtWon(unpaidAmount)}${refundedCount > 0 ? ` (환불 ${refundedCount}명)` : ''}`} color="red" />
-        <StatCard title="납부율" value={`${activeStudents.length === 0 ? 0 : Math.round((paidCount / activeStudents.length) * 100)}%`} color="orange" />
+        <StatCard title="미납" value={privacyMode ? '•••' : `${unpaidCount}명 · ${fmtWon(unpaidAmount)}`} color="red" />
+        <StatCard title="납부율" value={`${students.length === 0 ? 0 : Math.round((paidCount / students.length) * 100)}%`} color="orange" />
       </div>
 
       {/* 학생 목록 */}
@@ -6750,290 +5343,39 @@ function PaymentTab({ students, setStudents, privacyMode, settings }) {
             <tr>
               <th className="px-3 py-2 text-left font-semibold text-gray-700">학생</th>
               <th className="px-3 py-2 text-right font-semibold text-gray-700">납부액</th>
-              <th className="px-3 py-2 text-center font-semibold text-gray-700">청구일 <span className="font-normal text-[10px] text-gray-400">(⚡=자동)</span></th>
               <th className="px-3 py-2 text-center font-semibold text-gray-700">상태</th>
               <th className="px-3 py-2 text-center font-semibold text-gray-700">납부일</th>
-              <th className="px-3 py-2 text-center font-semibold text-gray-700">결제 수단</th>
               <th className="px-3 py-2 text-left font-semibold text-gray-700">메모</th>
-              <th className="px-3 py-2 text-center font-semibold text-gray-700">이력</th>
             </tr>
           </thead>
           <tbody>
             {filtered.length === 0 && (
-              <tr><td colSpan="8" className="px-3 py-8 text-center text-gray-400">해당 조건의 학생이 없습니다</td></tr>
+              <tr><td colSpan="5" className="px-3 py-8 text-center text-gray-400">해당 조건의 학생이 없습니다</td></tr>
             )}
             {filtered.map((s) => {
               const p = getPayment(s);
               const amount = getAmount(s);
-              const st = p.status || 'pending';
-              const isPaid = st === 'paid';
-              const items = p.items || [];
-              const itemsSum = items.reduce((a, it) => a + (Number(it.amount) || 0), 0);
+              const isPaid = p.status === 'paid';
               return (
-                <React.Fragment key={s.id}>
-                <tr className={`border-b transition hover:bg-indigo-50 ${isPaid ? 'bg-green-50/40' : st === 'refunded' ? 'bg-purple-50/40' : ''} ${(s.isWithdrawn || s.isSuspended) ? 'opacity-70' : ''}`}>
-                  <td className="px-3 py-2 font-semibold text-gray-800">
-                    {s.name}
-                    {s.isWithdrawn && <span className="ml-1.5 text-[9px] px-1.5 py-0.5 bg-rose-100 text-rose-700 rounded font-semibold">퇴원</span>}
-                    {s.isSuspended && !s.isWithdrawn && <span className="ml-1.5 text-[9px] px-1.5 py-0.5 bg-amber-100 text-amber-700 rounded font-semibold">휴원</span>}
-                  </td>
-                  <td className="px-3 py-2 text-right font-medium text-gray-700">
-                    <button
-                      onClick={() => editAmount(s)}
-                      className="hover:bg-indigo-50 hover:text-indigo-700 rounded px-1.5 py-0.5 transition"
-                      title="클릭하면 이 달 청구 금액을 직접 수정할 수 있어요 (안 듣는 과목 제외 등)"
-                    >
-                      {fmtWon(amount)}
-                      {p.amountOverride != null && p.amountOverride !== '' && <span className="ml-1 text-[9px] text-indigo-500 font-bold">✏️수정됨</span>}
+                <tr key={s.id} className={`border-b ${isPaid ? 'bg-green-50/40' : ''}`}>
+                  <td className="px-3 py-2 font-semibold text-gray-800">{s.name}</td>
+                  <td className="px-3 py-2 text-right font-medium text-gray-700">{fmtWon(amount)}</td>
+                  <td className="px-3 py-2 text-center">
+                    <button onClick={() => togglePaid(s)} className={`px-3 py-1 rounded text-xs font-bold transition ${isPaid ? 'bg-green-600 text-white' : 'bg-red-100 text-red-700 border border-red-300 hover:bg-red-200'}`}>
+                      {isPaid ? '✓ 납부완료' : '미납'}
                     </button>
-                    {items.length > 0 && (
-                      <div className={`text-[10px] font-semibold ${itemsSum >= amount ? 'text-green-600' : 'text-indigo-600'}`}>
-                        💳 {items.length}건 · 받음 {fmtWon(itemsSum)}
-                      </div>
-                    )}
-                  </td>
-                  <td className="px-3 py-2 text-center">
-                    <div className="flex items-center gap-1 justify-center">
-                      <input
-                        type="date"
-                        value={p.dueDate || ''}
-                        onChange={(e) => updatePayment(s.id, { dueDate: e.target.value })}
-                        className="text-xs px-1.5 py-0.5 border rounded"
-                        title="교습비 청구일 (직접 수정 가능)"
-                      />
-                      <button
-                        onClick={() => {
-                          const due = autoDueForMonth(s);
-                          if (!due) { alert(`${yearMonth.slice(5)}월에 해당하는 주기 일정을 찾지 못했어요.\n청구일을 직접 선택해주세요.`); return; }
-                          updatePayment(s.id, { dueDate: due });
-                        }}
-                        className="px-1.5 py-0.5 text-xs bg-amber-100 hover:bg-amber-200 text-amber-700 rounded font-bold"
-                        title="보고 있는 달의 주기 시작일로 자동 입력"
-                      >⚡</button>
-                    </div>
-                  </td>
-                  <td className="px-3 py-2 text-center">
-                    <select
-                      value={st}
-                      onChange={(e) => setPayStatus(s, e.target.value)}
-                      className={`px-2 py-1 rounded text-xs font-bold border cursor-pointer ${isPaid ? 'bg-green-600 text-white border-green-700' : st === 'refunded' ? 'bg-purple-100 text-purple-700 border-purple-300' : 'bg-red-50 text-red-700 border-red-300'}`}
-                    >
-                      <option value="pending">미납</option>
-                      <option value="paid">✓ 납부완료</option>
-                      <option value="refunded">↩ 환불</option>
-                    </select>
                   </td>
                   <td className="px-3 py-2 text-center">
                     <input type="date" value={p.paidDate || ''} onChange={(e) => updatePayment(s.id, { paidDate: e.target.value })} className="text-xs px-1.5 py-0.5 border rounded" />
                   </td>
-                  <td className="px-3 py-2 text-center">
-                    <select
-                      value={p.method || ''}
-                      onChange={(e) => updatePayment(s.id, { method: e.target.value })}
-                      className={`text-xs px-1.5 py-1 border rounded max-w-[150px] ${p.method ? 'text-gray-800' : 'text-gray-400'}`}
-                      title="결제 수단"
-                    >
-                      <option value="">— 선택 —</option>
-                      {PAYMENT_METHODS.map(m => <option key={m} value={m}>{m}</option>)}
-                    </select>
-                  </td>
                   <td className="px-3 py-2">
                     <input type="text" value={p.note || ''} onChange={(e) => updatePayment(s.id, { note: e.target.value })} placeholder="메모 (선택)" className="w-full px-2 py-1 text-xs border rounded" />
                   </td>
-                  <td className="px-3 py-2 text-center">
-                    <div className="flex gap-1 justify-center">
-                      <button
-                        onClick={() => setExpandedId(expandedId === s.id ? null : s.id)}
-                        className={`px-2 py-1 text-xs rounded font-semibold ${items.length > 0 || expandedId === s.id ? 'bg-indigo-600 text-white' : 'bg-indigo-100 hover:bg-indigo-200 text-indigo-700'}`}
-                        title="분할·항목별 결제 내역 (교습비/교재비 나누기, 카드 여러 장)"
-                      >💳</button>
-                      <button onClick={() => setHistoryStudent(s)} className="px-2 py-1 text-xs bg-indigo-100 hover:bg-indigo-200 text-indigo-700 rounded font-semibold" title="이 학생의 전체 납부 이력 보기">📜</button>
-                      {!isPaid && (
-                        <button
-                          onClick={() => copyText(buildPaymentMessage(s, settings || DEFAULT_SETTINGS, getRegistrationDeadline(s, settings || DEFAULT_SETTINGS), amount))}
-                          className="px-2 py-1 text-xs bg-yellow-100 hover:bg-yellow-200 text-yellow-700 rounded font-semibold"
-                          title="학부모께 보낼 안내 문자 복사"
-                        >📩</button>
-                      )}
-                    </div>
-                  </td>
                 </tr>
-                {expandedId === s.id && (
-                  <tr className="border-b bg-indigo-50/60">
-                    <td colSpan="8" className="px-4 py-3">
-                      <div className="flex items-center gap-2 mb-2 flex-wrap">
-                        <span className="text-xs font-bold text-indigo-900">💳 {s.name} · {yearMonth} 분할·항목별 결제 내역</span>
-                        <button
-                          onClick={() => {
-                            const t = (s.subjects || []).reduce((a, x) => a + (x.tuition || 0), 0);
-                            const m = (s.materials || []).reduce((a, x) => a + (x.amount || 0), 0);
-                            const seed = [{ id: uid(), label: '교습비', amount: t, method: '', paidDate: '', note: '' }];
-                            if (m > 0) seed.push({ id: uid(), label: '교재비', amount: m, method: '', paidDate: '', note: '' });
-                            updatePayment(s.id, { items: [...items, ...seed] });
-                          }}
-                          className="px-2 py-1 bg-indigo-600 hover:bg-indigo-700 text-white text-[11px] rounded font-semibold"
-                        >🧮 교습비·교재비로 나누기</button>
-                        <button
-                          onClick={() => updatePayment(s.id, { items: [...items, { id: uid(), label: '', amount: 0, method: '', paidDate: '', note: '' }] })}
-                          className="px-2 py-1 bg-white border border-indigo-300 text-indigo-700 text-[11px] rounded font-semibold"
-                        >+ 항목 추가</button>
-                        <span className="ml-auto text-[11px] text-gray-600">
-                          받은 합계 <strong className={itemsSum >= amount ? 'text-green-700' : 'text-indigo-700'}>{fmtWon(itemsSum)}</strong> / 청구 {fmtWon(amount)}
-                        </span>
-                      </div>
-                      {items.length === 0 ? (
-                        <div className="text-[11px] text-gray-400">아직 항목이 없어요. <strong>[🧮 교습비·교재비로 나누기]</strong>를 누르면 금액이 자동으로 채워지고, 카드 여러 장으로 나눠 냈으면 <strong>[+ 항목 추가]</strong>로 장수만큼 만드세요.</div>
-                      ) : (
-                        <div className="space-y-1">
-                          {items.map((it) => {
-                            const upItem = (patch) => updatePayment(s.id, { items: items.map(x => x.id === it.id ? { ...x, ...patch } : x) });
-                            return (
-                              <div key={it.id} className="flex items-center gap-1.5 flex-wrap bg-white border rounded px-2 py-1">
-                                <input type="text" value={it.label || ''} onChange={(e) => upItem({ label: e.target.value })} placeholder="항목 (교습비/교재비)" className="w-28 px-1.5 py-1 border rounded text-xs" />
-                                <input type="number" value={it.amount} min="0" step="1000" onChange={(e) => upItem({ amount: parseInt(e.target.value) || 0 })} className="w-28 px-1.5 py-1 border rounded text-xs text-right" />
-                                <span className="text-[10px] text-gray-400">원</span>
-                                <select value={it.method || ''} onChange={(e) => upItem({ method: e.target.value })} className={`text-xs px-1 py-1 border rounded ${it.method ? 'text-gray-800' : 'text-gray-400'}`}>
-                                  <option value="">수단 —</option>
-                                  {PAYMENT_METHODS.map(m2 => <option key={m2} value={m2}>{m2}</option>)}
-                                </select>
-                                <input type="date" value={it.paidDate || ''} onChange={(e) => upItem({ paidDate: e.target.value })} className="text-xs px-1 py-1 border rounded" title="이 항목 결제일" />
-                                <input type="text" value={it.note || ''} onChange={(e) => upItem({ note: e.target.value })} placeholder="메모 (예: 하나카드)" className="flex-1 min-w-[100px] px-1.5 py-1 border rounded text-xs" />
-                                <button onClick={() => updatePayment(s.id, { items: items.filter(x => x.id !== it.id) })} className="text-rose-500 hover:bg-rose-50 rounded px-1.5">×</button>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      )}
-                    </td>
-                  </tr>
-                )}
-                </React.Fragment>
               );
             })}
           </tbody>
         </table>
-      </div>
-
-      {historyStudent && (
-        <PaymentHistoryModal
-          student={students.find(x => x.id === historyStudent.id) || historyStudent}
-          onClose={() => setHistoryStudent(null)}
-          onUpdate={(ym, patch) => updatePaymentForMonth(historyStudent.id, ym, patch)}
-        />
-      )}
-    </div>
-  );
-}
-
-// ═══════════════════════════════════════════════════
-//  ☁️ 로그인 화면
-// ═══════════════════════════════════════════════════
-
-function LoginScreen({ onLoggedIn, onOffline }) {
-  const [email, setEmail] = useState('');
-  const [pw, setPw] = useState('');
-  const [err, setErr] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [mode, setMode] = useState('login'); // 'login' | 'signup'
-
-  const doLogin = async () => {
-    if (!email.trim() || !pw) { setErr('이메일과 비밀번호를 입력하세요'); return; }
-    setBusy(true); setErr('');
-    try {
-      const { data, error } = await sb.auth.signInWithPassword({ email: email.trim(), password: pw });
-      if (error) { setErr('로그인 실패 — 이메일 또는 비밀번호를 확인하세요'); setBusy(false); return; }
-      onLoggedIn(data.user);
-    } catch (e) {
-      setErr('서버 연결에 실패했어요. 인터넷 연결을 확인하세요.');
-      setBusy(false);
-    }
-  };
-
-  // 처음 계정 만들기 (원장님이 명단에 추가해둔 이메일만 실제 사용 가능)
-  const doSignup = async () => {
-    if (!email.trim() || !pw) { setErr('이메일과 비밀번호를 입력하세요'); return; }
-    if (pw.length < 6) { setErr('비밀번호는 6자 이상으로 만들어주세요'); return; }
-    setBusy(true); setErr('');
-    try {
-      const { data, error } = await sb.auth.signUp({ email: email.trim(), password: pw });
-      if (error) {
-        setErr(error.message && error.message.includes('disabled')
-          ? '지금은 새 가입이 막혀 있어요. 원장님께 문의하세요.'
-          : '계정 만들기 실패 — 이미 있는 이메일이면 [로그인]으로 시도해보세요');
-        setBusy(false);
-        return;
-      }
-      if (data.session && data.user) { onLoggedIn(data.user); return; }
-      // 이메일 확인이 켜져 있는 경우
-      setBusy(false);
-      setMode('login');
-      setErr('✅ 계정이 만들어졌어요! 이메일 확인이 필요하면 받은 메일의 링크를 눌러주세요.');
-    } catch (e) {
-      setErr('서버 연결에 실패했어요. 인터넷 연결을 확인하세요.');
-      setBusy(false);
-    }
-  };
-
-  // 비밀번호 재설정 메일 보내기
-  const doForgot = async () => {
-    const target = email.trim() || prompt('비밀번호를 재설정할 이메일을 입력하세요');
-    if (!target) return;
-    try {
-      await sb.auth.resetPasswordForEmail(target, { redirectTo: 'https://forcedunsan.github.io/academy/' });
-      alert('📧 ' + target + ' 로 재설정 메일을 보냈어요.\n메일의 링크를 누르면 새 비밀번호를 만들 수 있습니다.\n(메일이 안 오면 스팸함도 확인해주세요)');
-    } catch (e) {
-      alert('메일 발송에 실패했어요. 잠시 후 다시 시도해주세요.');
-    }
-  };
-
-  return (
-    <div className="min-h-screen invoice-navy wave-bg flex items-center justify-center p-4">
-      <div className="w-full max-w-sm">
-        <div className="text-center mb-6">
-          <div className="invoice-gold-text text-[11px] tracking-[0.25em] font-semibold mb-2">THE FORCE DUNSAN ACADEMY</div>
-          <h1 className="text-white text-2xl font-bold">수강료 안내 생성기</h1>
-          <p className="text-white/60 text-xs mt-2">학원에서 발급받은 계정으로 로그인하세요</p>
-        </div>
-        <div className="bg-white rounded-xl shadow-2xl p-6 space-y-3">
-          <div className="flex rounded-lg overflow-hidden border border-gray-200">
-            <button onClick={() => { setMode('login'); setErr(''); }} className={`flex-1 py-2 text-sm font-bold transition ${mode === 'login' ? 'bg-blue-600 text-white' : 'bg-gray-50 text-gray-500 hover:bg-gray-100'}`}>로그인</button>
-            <button onClick={() => { setMode('signup'); setErr(''); }} className={`flex-1 py-2 text-sm font-bold transition ${mode === 'signup' ? 'bg-emerald-600 text-white' : 'bg-gray-50 text-gray-500 hover:bg-gray-100'}`}>처음 계정 만들기</button>
-          </div>
-          {mode === 'signup' && (
-            <p className="text-[11px] text-emerald-700 bg-emerald-50 border border-emerald-200 rounded p-2 leading-relaxed">
-              원장님이 <strong>계정 명단에 추가해둔 이메일</strong>로 비밀번호를 만들어 시작하세요.
-            </p>
-          )}
-          <div>
-            <label className="block text-xs font-semibold text-gray-700 mb-1">이메일</label>
-            <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && (mode === 'login' ? doLogin() : doSignup())} className="w-full px-3 py-2.5 border rounded text-sm" placeholder="name@example.com" autoFocus />
-          </div>
-          <div>
-            <label className="block text-xs font-semibold text-gray-700 mb-1">비밀번호</label>
-            <input type="password" value={pw} onChange={(e) => setPw(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && (mode === 'login' ? doLogin() : doSignup())} className="w-full px-3 py-2.5 border rounded text-sm" placeholder="••••••••" />
-          </div>
-          {err && <div className={`text-xs font-semibold rounded p-2 ${err.startsWith('✅') ? 'text-emerald-700 bg-emerald-50 border border-emerald-200' : 'text-rose-600 bg-rose-50 border border-rose-200'}`}>{err}</div>}
-          {mode === 'login' ? (
-            <button onClick={doLogin} disabled={busy} className={`w-full py-2.5 rounded text-sm font-bold text-white transition ${busy ? 'bg-gray-400' : 'bg-blue-600 hover:bg-blue-700'}`}>
-              {busy ? '로그인 중…' : '로그인'}
-            </button>
-          ) : (
-            <button onClick={doSignup} disabled={busy} className={`w-full py-2.5 rounded text-sm font-bold text-white transition ${busy ? 'bg-gray-400' : 'bg-emerald-600 hover:bg-emerald-700'}`}>
-              {busy ? '만드는 중…' : '계정 만들고 시작하기'}
-            </button>
-          )}
-          <div className="text-center">
-            <button onClick={doForgot} className="text-[11px] text-gray-400 hover:text-gray-600 underline">비밀번호를 잊었어요</button>
-          </div>
-          <p className="text-[10px] text-gray-400 text-center leading-relaxed">
-            로그인하면 학생·납부 데이터가 서버에 안전하게 저장되고<br />다른 선생님과 실시간으로 공유됩니다.
-          </p>
-        </div>
-        <div className="text-center mt-4">
-          <button onClick={onOffline} className="text-[11px] text-white/50 hover:text-white/80 underline">
-            로그인 없이 이 컴퓨터에서만 사용 (공유 안 됨)
-          </button>
-        </div>
       </div>
     </div>
   );
@@ -7071,151 +5413,6 @@ function App() {
   const [selectedId, setSelectedId] = useState(students[0]?.id || null);
   const [editingStudent, setEditingStudent] = useState(null);
   const [showForm, setShowForm] = useState(false);
-  const [scheduleStudentId, setScheduleStudentId] = useState(null); // 📆 월별 일정 조회 대상
-
-  // ── ☁️ 클라우드 동기화 상태 ──
-  const [cloudUser, setCloudUser] = useState(sb ? undefined : null); // undefined=확인 중, null=미로그인
-  const [offlineMode, setOfflineMode] = useState(() => storage.get('tuition_offline_mode') === 'true');
-  const [syncStatus, setSyncStatus] = useState('');
-  const lastServerStampRef = useRef(null);
-  const suppressPushRef = useRef(true); // 서버에서 불러온 직후 재업로드 방지
-  const pushTimerRef = useRef(null);
-  const channelRef = useRef(null); // 실시간 채널
-  const [allowedInfo, setAllowedInfo] = useState(null); // null=확인 중, 'denied'=허용 안 됨, {email, is_admin}
-  const isAdmin = !!(allowedInfo && allowedInfo !== 'denied' && allowedInfo.is_admin);
-  const cloudReady = !!(cloudUser && allowedInfo && allowedInfo !== 'denied');
-
-  // 로그인 세션 확인 (앱 시작 시 1회) + 비밀번호 재설정 링크 처리
-  useEffect(() => {
-    if (!sb || offlineMode) { setCloudUser(null); return; }
-    sb.auth.getSession().then(({ data }) => {
-      setCloudUser(data && data.session ? data.session.user : null);
-    }).catch(() => setCloudUser(null));
-    const { data: sub } = sb.auth.onAuthStateChange((event, session) => {
-      if (event === 'PASSWORD_RECOVERY') {
-        const np = prompt('🔑 새 비밀번호를 입력하세요 (6자 이상)');
-        if (np) sb.auth.updateUser({ password: np }).then(({ error }) => alert(error ? '변경 실패: ' + error.message : '✅ 비밀번호가 변경되었습니다. 이제 새 비밀번호로 로그인됩니다.'));
-      }
-      if (session && session.user) setCloudUser(session.user);
-    });
-    return () => { try { sub.subscription.unsubscribe(); } catch (e) {} };
-  }, []);
-
-  // 허용 명단 확인 (앱 내 계정 관리) — 명단 표가 아직 없으면(구 버전 서버) 그냥 통과
-  useEffect(() => {
-    if (!cloudUser) return;
-    sb.from('allowed_emails').select('email,is_admin').eq('email', cloudUser.email).then(({ data, error }) => {
-      if (error) { setAllowedInfo({ email: cloudUser.email, is_admin: false, legacy: true }); return; }
-      setAllowedInfo(data && data.length > 0 ? data[0] : 'denied');
-    }).catch(() => setAllowedInfo({ email: cloudUser.email, is_admin: false, legacy: true }));
-  }, [cloudUser]);
-
-  // 서버 데이터를 화면에 적용
-  const applyServerData = (row) => {
-    suppressPushRef.current = true;
-    lastServerStampRef.current = row.updated_at;
-    const d = row.data || {};
-    if (Array.isArray(d.students)) setStudents(d.students);
-    if (d.settings) setSettings({ ...DEFAULT_SETTINGS, ...d.settings });
-  };
-
-  // 서버에서 불러오기 (최초 1회 + 60초마다 + 창 포커스 시)
-  const pullFromCloud = async (isFirst) => {
-    if (!sb || !cloudUser) return;
-    try {
-      const { data: rows, error } = await sb.from('academy_state').select('*').eq('id', 1);
-      if (error) throw error;
-      if (!rows || rows.length === 0) {
-        // 서버가 비어있음 → 이 컴퓨터의 데이터를 최초 업로드
-        const { error: e2 } = await sb.from('academy_state').insert({ id: 1, data: { students, settings }, updated_by: cloudUser.email || '' });
-        if (e2) throw e2;
-        const { data: r2 } = await sb.from('academy_state').select('updated_at').eq('id', 1);
-        if (r2 && r2[0]) lastServerStampRef.current = r2[0].updated_at;
-        setSyncStatus('saved');
-        return;
-      }
-      const row = rows[0];
-      if (isFirst) {
-        // 클라우드 도입 전 이 컴퓨터 데이터를 1회 자동 백업해둠 (만약을 위해)
-        if (!storage.get('tuition_precloud_backup')) {
-          storage.set('tuition_precloud_backup', storage.get('tuition_students') || '[]');
-        }
-        // 안전장치: 서버보다 이 컴퓨터에 학생이 훨씬 많으면 (실수로 빈 컴퓨터가 먼저 올린 경우) 물어봄
-        const serverStudents = (row.data && Array.isArray(row.data.students)) ? row.data.students : [];
-        const localReal = students.filter(s => s.id !== 'sample1');
-        if (localReal.length >= serverStudents.length + 3) {
-          const uploadLocal = confirm(
-            `서버에 저장된 학생은 ${serverStudents.length}명인데, 이 컴퓨터에는 ${localReal.length}명이 있어요.\n\n` +
-            `[확인] = 이 컴퓨터 데이터를 서버에 올려서 공유 (데이터가 많은 쪽 기준 — 권장)\n` +
-            `[취소] = 서버 데이터로 이 화면을 덮어쓰기`
-          );
-          if (uploadLocal) {
-            const { error: e3 } = await sb.from('academy_state').upsert({ id: 1, data: { students, settings }, updated_at: new Date().toISOString(), updated_by: cloudUser.email || '' });
-            if (e3) throw e3;
-            const { data: r3 } = await sb.from('academy_state').select('updated_at').eq('id', 1);
-            if (r3 && r3[0]) lastServerStampRef.current = r3[0].updated_at;
-            setSyncStatus('saved');
-            return;
-          }
-        }
-        applyServerData(row);
-        setSyncStatus('saved');
-      } else if (row.updated_at !== lastServerStampRef.current && !pushTimerRef.current) {
-        // 다른 사람이 고친 내용 반영 (내가 저장 대기 중일 때는 건너뜀)
-        applyServerData(row);
-      }
-    } catch (e) {
-      console.log('[클라우드 불러오기 실패]', e);
-      setSyncStatus('error');
-    }
-  };
-
-  // 로그인 + 허용 확인되면 불러오기 시작 (60초 폴링은 실시간이 놓칠 때의 안전망)
-  useEffect(() => {
-    if (!cloudReady) return;
-    pullFromCloud(true);
-    const iv = setInterval(() => pullFromCloud(false), 60000);
-    const onFocus = () => pullFromCloud(false);
-    window.addEventListener('focus', onFocus);
-    return () => { clearInterval(iv); window.removeEventListener('focus', onFocus); };
-  }, [cloudReady]);
-
-  // ⚡ 실시간 반영: 다른 사람이 저장하면 즉시 신호를 받아 바로 불러옴
-  useEffect(() => {
-    if (!cloudReady) return;
-    const ch = sb.channel('academy-sync');
-    ch.on('broadcast', { event: 'changed' }, (msg) => {
-      if (msg && msg.payload && msg.payload.by === cloudUser.email) return; // 내 저장 신호는 무시
-      pullFromCloud(false);
-    }).subscribe();
-    channelRef.current = ch;
-    return () => { try { sb.removeChannel(ch); } catch (e) {} channelRef.current = null; };
-  }, [cloudReady]);
-
-  // 데이터가 바뀌면 서버에 자동 저장 (1.5초 묶어서) + 저장 후 실시간 신호 발송
-  useEffect(() => {
-    if (!sb || !cloudReady) return;
-    if (suppressPushRef.current) { suppressPushRef.current = false; return; }
-    setSyncStatus('saving');
-    if (pushTimerRef.current) clearTimeout(pushTimerRef.current);
-    pushTimerRef.current = setTimeout(async () => {
-      pushTimerRef.current = null;
-      try {
-        const { error } = await sb.from('academy_state').upsert({ id: 1, data: { students, settings }, updated_at: new Date().toISOString(), updated_by: cloudUser.email || '' });
-        if (error) throw error;
-        const { data: r2 } = await sb.from('academy_state').select('updated_at').eq('id', 1);
-        if (r2 && r2[0]) lastServerStampRef.current = r2[0].updated_at;
-        setSyncStatus('saved');
-        // ⚡ 다른 화면들에게 "바뀌었어요" 신호 → 즉시 반영됨
-        if (channelRef.current) {
-          try { channelRef.current.send({ type: 'broadcast', event: 'changed', payload: { by: cloudUser.email } }); } catch (e) {}
-        }
-      } catch (e) {
-        console.log('[클라우드 저장 실패]', e);
-        setSyncStatus('error');
-      }
-    }, 1500);
-  }, [students, settings, cloudReady]);
   const [showBulkImport, setShowBulkImport] = useState(false);
   const [backupReminder, setBackupReminder] = useState(null); // null | {daysSinceBackup}
 
@@ -7264,24 +5461,6 @@ function App() {
     copy.subjects = (copy.subjects || []).map(s => ({ ...s, id: uid() }));
     copy.materials = (copy.materials || []).map(m => ({ ...m, id: uid() }));
     setStudents([...students, copy]);
-  };
-  // 퇴원·휴원 학생 복귀 (정보·이력·납부 기록은 그대로 유지되어 있음)
-  const handleRestoreStudent = (id) => {
-    const t = students.find(s => s.id === id);
-    if (!t) return;
-    const label = t.isWithdrawn ? '퇴원' : '휴원';
-    if (!confirm(`${t.name} 학생을 ${label} 해제하고 재원생으로 복귀시킬까요?\n\n과목·일정 이력·납부 기록은 그대로 살아납니다.`)) return;
-    // 쉬었던 기간을 자동 기록 → 납부 현황에서 그 기간의 달은 빠짐
-    const today = formatDateStr(new Date());
-    const gap = t.isSuspended && t.suspendStart
-      ? { start: t.suspendStart, end: t.suspendEnd || today }
-      : (t.isWithdrawn && t.withdrawnDate ? { start: t.withdrawnDate, end: today } : null);
-    setStudents(students.map(s => s.id === id ? {
-      ...s,
-      isWithdrawn: false, withdrawnDate: '', isSuspended: false, suspendStart: '', suspendEnd: '',
-      suspendHistory: gap ? [...(s.suspendHistory || []), gap] : (s.suspendHistory || []),
-    } : s));
-    alert(`✅ ${t.name} 학생이 복귀되었습니다.${gap ? `\n\n😴 쉬었던 기간(${gap.start} ~ ${gap.end})이 자동 기록되어 납부 현황에서 그 기간의 달은 빠집니다.` : ''}\n\n📌 학생 편집에서 각 과목의 "이번 청구 주기 첫 수업일"을 복귀 후 첫 수업 날짜로 바꿔주세요.`);
   };
   const handleSaveStudent = (data) => {
     if (students.find(s => s.id === data.id)) {
@@ -7369,7 +5548,7 @@ function App() {
       return;
     }
     const preview = changes.slice(0, 8).join('\n') + (changes.length > 8 ? `\n\n... 외 ${changes.length - 8}건` : '');
-    if (!confirm(`${changes.length}건의 시작일을 다음 주기로 이동합니다.\n\n미리보기:\n${preview}\n\n✅ 이동 전 현재 주기는 자동으로 이력에 저장됩니다.\n\n진행하시겠습니까?\n\n💡 이동 후에도 지난 일정·납부 기록은 [학생 관리 → 📆 일정]의 ✏️ 수정 모드에서 고칠 수 있습니다.`)) return;
+    if (!confirm(`${changes.length}건의 시작일을 다음 주기로 이동합니다.\n\n미리보기:\n${preview}\n\n✅ 이동 전 현재 주기는 자동으로 이력에 저장됩니다.\n\n진행하시겠습니까?\n\n💡 되돌릴 수 없으니 먼저 백업을 권장합니다.`)) return;
     setStudents(advanced);
     alert(`✅ ${changes.length}건 업데이트 완료\n각 학생의 지난 주기가 이력에 저장되었습니다.`);
   };
@@ -7411,56 +5590,13 @@ function App() {
     }
     
     const preview = changes.join('\n');
-    const msg = `▶ ${target.name} 학생을 다음 주기로 이동합니다.\n\n미리보기:\n${preview}\n\n✅ 이동 전 현재 주기는 자동으로 이력에 저장됩니다.\n\n진행하시겠습니까?\n\n💡 이동 후에도 지난 일정·납부 기록은 [학생 관리 → 📆 일정]의 ✏️ 수정 모드에서 고칠 수 있습니다.`;
+    const msg = `▶ ${target.name} 학생을 다음 주기로 이동합니다.\n\n미리보기:\n${preview}\n\n✅ 이동 전 현재 주기는 자동으로 이력에 저장됩니다.\n\n진행하시겠습니까?\n\n💡 되돌릴 수 없으니 신중히 확인해주세요.`;
     
     if (!confirm(msg)) return;
     
     setStudents(students.map(s => s.id === studentId ? advanced : s));
     alert(`✅ ${target.name} 학생이 다음 주기로 이동되었습니다.`);
   };
-
-  // 🔔 알림 게시판 (배너를 닫아도 언제든 다시 보기)
-  const [showAlertBoard, setShowAlertBoard] = useState(false);
-  const alertsNow = computeTuitionAlerts(students, settings);
-  const alertCount = alertsNow.items.length + alertsNow.overdueUnpaid.length;
-
-  // ☁️ 로그인 화면 (오프라인 모드가 아니면 로그인 필요)
-  if (sb && !offlineMode) {
-    if (cloudUser === undefined) {
-      return (
-        <div className="min-h-screen invoice-navy flex items-center justify-center">
-          <div className="text-white/70 text-sm">☁️ 서버 연결 확인 중…</div>
-        </div>
-      );
-    }
-    if (cloudUser === null) {
-      return (
-        <LoginScreen
-          onLoggedIn={(u) => setCloudUser(u)}
-          onOffline={() => { storage.set('tuition_offline_mode', 'true'); setOfflineMode(true); }}
-        />
-      );
-    }
-    if (allowedInfo === 'denied') {
-      return (
-        <div className="min-h-screen invoice-navy flex items-center justify-center p-4">
-          <div className="bg-white rounded-xl shadow-2xl p-6 max-w-sm text-center">
-            <div className="text-3xl mb-2">🚫</div>
-            <h2 className="font-bold text-gray-800 mb-2">아직 사용 허가가 없는 계정이에요</h2>
-            <p className="text-sm text-gray-600 leading-relaxed mb-4">
-              <strong>{cloudUser.email}</strong><br />
-              원장님께 이 이메일을 <strong>계정 명단에 추가</strong>해 달라고 요청하세요.<br />
-              (학원 정보 탭 → 👥 계정 관리)
-            </p>
-            <button
-              onClick={async () => { await sb.auth.signOut(); location.reload(); }}
-              className="px-4 py-2 bg-gray-700 text-white rounded text-sm font-semibold"
-            >다른 계정으로 로그인</button>
-          </div>
-        </div>
-      );
-    }
-  }
 
   return (
     <div className="min-h-screen">
@@ -7474,35 +5610,6 @@ function App() {
             <h1 className="text-lg font-bold">{settings.academyName} · 수강료 안내 생성기</h1>
           </div>
           <div className="flex items-center gap-3">
-            {sb && cloudUser && (
-              <div className="flex items-center gap-1.5 text-[10px]">
-                <span className={syncStatus === 'error' ? 'text-rose-300 font-bold' : 'text-white/60'} title={cloudUser.email}>
-                  {syncStatus === 'saving' ? '☁️ 저장 중…' : syncStatus === 'error' ? '⚠️ 저장 실패 (인터넷 확인)' : '☁️ 동기화됨'}
-                </span>
-                <button
-                  onClick={async () => { if (confirm('로그아웃할까요?')) { await sb.auth.signOut(); location.reload(); } }}
-                  className="underline text-white/50 hover:text-white"
-                  title={cloudUser.email}
-                >로그아웃</button>
-              </div>
-            )}
-            {sb && !cloudUser && offlineMode && (
-              <button
-                onClick={() => { storage.set('tuition_offline_mode', ''); location.reload(); }}
-                className="text-[10px] underline text-white/50 hover:text-white"
-                title="로그인하면 다른 선생님과 데이터가 공유됩니다"
-              >☁️ 로그인하기</button>
-            )}
-            <button
-              onClick={() => setShowAlertBoard(true)}
-              className="relative px-3 py-1.5 rounded-full text-xs font-semibold bg-white/15 text-white/90 hover:bg-white/25 transition"
-              title="알림 게시판 — 마감 임박·미납 학생을 언제든 다시 볼 수 있어요"
-            >
-              🔔 알림
-              {alertCount > 0 && (
-                <span className="absolute -top-1.5 -right-1.5 bg-rose-500 text-white text-[10px] font-bold rounded-full min-w-[18px] h-[18px] flex items-center justify-center px-1">{alertCount}</span>
-              )}
-            </button>
             <button
               onClick={() => setPrivacyMode(!privacyMode)}
               className={`px-3 py-1.5 rounded-full text-xs font-semibold transition flex items-center gap-1.5 ${privacyMode ? 'bg-rose-500 text-white' : 'bg-white/15 text-white/90 hover:bg-white/25'}`}
@@ -7541,13 +5648,6 @@ function App() {
             onDismiss={handleDismissBackupReminder}
           />
         )}
-        <TuitionReminderBanner
-          students={students}
-          settings={settings}
-          onGoStudent={(id) => { setSelectedId(id); setTab('invoices'); }}
-          onGoPayments={() => setTab('payments')}
-        />
-
         {tab === 'students' && (
           <StudentListTab
             students={students}
@@ -7562,25 +5662,6 @@ function App() {
             onImportJSON={handleImportJSON}
             onAdvanceAll={handleAdvanceAll}
             onAdvanceOne={handleAdvanceOne}
-            onShowSchedule={(id) => setScheduleStudentId(id)}
-            onRestore={handleRestoreStudent}
-          />
-        )}
-        {scheduleStudentId && (
-          <ScheduleHistoryModal
-            student={students.find(s => s.id === scheduleStudentId)}
-            settings={settings}
-            onClose={() => setScheduleStudentId(null)}
-            onUpdateStudent={(patch) => setStudents(students.map(s => s.id === scheduleStudentId ? { ...s, ...patch } : s))}
-          />
-        )}
-        {showAlertBoard && (
-          <AlertBoardModal
-            students={students}
-            settings={settings}
-            onClose={() => setShowAlertBoard(false)}
-            onGoStudent={(id) => { setSelectedId(id); setTab('invoices'); }}
-            onGoPayments={() => setTab('payments')}
           />
         )}
         {tab === 'invoices' && (
@@ -7593,7 +5674,7 @@ function App() {
           />
         )}
         {tab === 'payments' && (
-          <PaymentTab students={students} setStudents={setStudents} privacyMode={privacyMode} settings={settings} />
+          <PaymentTab students={students} setStudents={setStudents} privacyMode={privacyMode} />
         )}
         {tab === 'reports' && (
           <ReportsTab students={students} settings={settings} privacyMode={privacyMode} />
@@ -7605,7 +5686,7 @@ function App() {
           <PolicyTab settings={settings} />
         )}
         {tab === 'settings' && (
-          <SettingsTab settings={settings} setSettings={setSettings} students={students} cloudUser={cloudUser} isAdmin={isAdmin} />
+          <SettingsTab settings={settings} setSettings={setSettings} students={students} />
         )}
       </main>
 
