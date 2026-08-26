@@ -2082,9 +2082,11 @@ function MakeupManager({ subject, holidays, onUpdate }) {
   const holidaySet = new Set((holidays || []).map(h => h.date));
   const holidayLabel = new Map((holidays || []).map(h => [h.date, h.label]));
 
-  // ── 이번 주기 범위 자동 계산 ───────────────────────────
-  const cycleRange = (() => {
-    if (!subject.startDate || !(subject.classDays || []).length) return null;
+  // ── 주기 범위 자동 계산 (계획 = 이번 주기 / 진행 = 지난 주기) ──
+  const hasBasics = !!subject.startDate && (subject.classDays || []).length > 0;
+
+  const planRange = (() => {
+    if (!hasBasics) return null;
     const sessions = getClassSessions(
       parseDate(subject.startDate),
       subject.classDays,
@@ -2099,13 +2101,39 @@ function MakeupManager({ subject, holidays, onUpdate }) {
     };
   })();
 
-  const fillCycleRange = () => {
-    if (!cycleRange) {
-      alert('과목의 시작일과 수업요일을 먼저 입력해주세요.');
+  // 지난 주기: 시작일 기준으로 역산 (진행 캘린더와 동일한 계산)
+  const prevRange = (() => {
+    if (!hasBasics || subject.isNew) return null;
+    const sessions = getPreviousCycleSessions(
+      parseDate(subject.startDate),
+      subject.classDays,
+      subject.totalSessions,
+      holidaySet,
+      subject.skipHolidays
+    );
+    if (sessions.length === 0) return null;
+    return {
+      start: formatDateStr(sessions[0].date),
+      // 지난 주기 끝 ~ 이번 주기 시작 직전까지 포함 (그 사이 보강도 진행 캘린더에 표시됨)
+      end: formatDateStr(addDays(parseDate(subject.startDate), -1)),
+      lastSession: formatDateStr(sessions[sessions.length - 1].date),
+    };
+  })();
+
+  const fillRange = (which) => {
+    const r = which === 'prev' ? prevRange : planRange;
+    if (!r) {
+      alert(
+        which === 'prev'
+          ? (subject.isNew
+              ? '이 과목은 「신규 등록」으로 체크되어 있어 지난 주기가 없습니다.'
+              : '과목의 시작일과 수업요일을 먼저 입력해주세요.')
+          : '과목의 시작일과 수업요일을 먼저 입력해주세요.'
+      );
       return;
     }
-    setRangeStart(cycleRange.start);
-    setRangeEnd(cycleRange.end);
+    setRangeStart(r.start);
+    setRangeEnd(r.end);
   };
 
   const toggleRepeatDay = (dow) => {
@@ -2285,16 +2313,30 @@ function MakeupManager({ subject, holidays, onUpdate }) {
             <span className="text-[11px] text-gray-400">~</span>
             <input type="date" value={rangeEnd} onChange={(e) => setRangeEnd(e.target.value)}
                    className="px-1.5 py-1 border rounded text-[11px]" />
-            <button onClick={fillCycleRange}
+            <button onClick={() => fillRange('prev')}
+                    className="px-2 py-1 bg-amber-100 text-amber-800 border border-amber-300 rounded text-[11px] font-medium hover:bg-amber-200">
+              ⏪ 지난 주기(진행)
+            </button>
+            <button onClick={() => fillRange('plan')}
                     className="px-2 py-1 bg-emerald-100 text-emerald-800 border border-emerald-300 rounded text-[11px] font-medium hover:bg-emerald-200">
-              📅 이번 주기로
+              📅 이번 주기(계획)
             </button>
           </div>
-          {cycleRange && (
-            <p className="text-[10px] text-gray-400 pl-14">
-              이번 주기: {cycleRange.start} ~ {cycleRange.end}
-            </p>
-          )}
+          <div className="pl-14 space-y-0.5">
+            {prevRange && (
+              <p className="text-[10px] text-amber-600">
+                지난 주기(진행 캘린더): {prevRange.start} ~ {prevRange.end}
+              </p>
+            )}
+            {subject.isNew && (
+              <p className="text-[10px] text-gray-400">지난 주기 없음 (신규 등록 과목)</p>
+            )}
+            {planRange && (
+              <p className="text-[10px] text-gray-400">
+                이번 주기(계획 캘린더): {planRange.start} ~ {planRange.end}
+              </p>
+            )}
+          </div>
 
           {/* 사유 + 옵션 */}
           <div className="flex items-center gap-1.5 flex-wrap">
