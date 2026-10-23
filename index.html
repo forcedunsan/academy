@@ -634,6 +634,19 @@ function buildSessionMap(student, settings, mode) {
         const nextCycleStartStr = formatDateStr(newCycleStart);
         if (m.date > cycleEndStr && m.date < nextCycleStartStr) return true;
       }
+
+      // 3. 계획 캘린더(mode==='plan')인 경우,
+      //    지난 주기 끝 ~ 계획 시작일 사이의 보강도 함께 표시
+      //    (예: 계획 시작 10/19 직전 10/18 보강 → 계획 캘린더에도 보이게)
+      if (mode === 'plan' && m.date < cycleStartStr) {
+        let prevEndStr = '';
+        if (!sub.isNew) {
+          const prevSess = getPreviousCycleSessions(newCycleStart, getPrevClassDays(sub), getPrevTotalSessions(sub), withLongAbsence(holidaySet, sub), skipMinusLongAbsence(sub));
+          if (prevSess.length > 0) prevEndStr = formatDateStr(prevSess[prevSess.length - 1].date);
+        }
+        if (!prevEndStr) prevEndStr = formatDateStr(addDays(newCycleStart, -14));
+        if (m.date > prevEndStr) return true;
+      }
       
       return false;
     });
@@ -659,17 +672,30 @@ function buildSessionMap(student, settings, mode) {
       });
     });
 
+    // 요약용: 일정 변경(수정·추가·삭제)까지 반영한 실제 회차 수·기간
+    const realKeys = [];
+    sessionMap.forEach((items, dateKey) => {
+      items.forEach(it => { if (it.subjectIndex === subIdx && !it.isMakeup) realKeys.push(dateKey); });
+    });
+    realKeys.sort();
+    const addCount = realKeys.length > 0 ? addAdj.length : 0;
+
     subjectData.push({
       ...sub,
       index: subIdx,
       sessions,
       startDate: cycleStart,
       endDate: cycleEnd,
+      realCount: realKeys.length,
+      realStart: realKeys.length ? parseDate(realKeys[0]) : cycleStart,
+      realEnd: realKeys.length ? parseDate(realKeys[realKeys.length - 1]) : cycleEnd,
+      addCount,
       absentCount: absencesForSubject.filter(a => {
         const d = parseDate(a.date);
         return d && d >= cycleStart && d <= cycleEnd;
       }).length,
-      makeupCount: makeups.length, // 이번 주기에 표시되는 보강 수
+      // 이번 주기에 속한 보강 수 (계획 캘린더는 시작 전 보강은 진행 쪽에서 세므로 제외)
+      makeupCount: makeups.filter(m => mode !== 'plan' || m.date >= cycleStartStr).length,
     });
   });
 
@@ -954,11 +980,14 @@ function CalendarView({ student, settings, mode, calendarRef }) {
             <div>
               <span style={{ fontWeight: 800, color: s.color.badge, marginRight: '8px' }}>{s.name}</span>
               <span style={{ color: '#6b7280' }}>
-                {fmtKDate(s.startDate)} ~ {fmtKDate(s.endDate)}
+                {fmtKDate(s.realStart || s.startDate)} ~ {fmtKDate(s.realEnd || s.endDate)}
               </span>
             </div>
             <div style={{ fontWeight: 600, color: '#1a2344' }}>
-              총 {s.sessions.length}회차
+              총 {s.realCount || s.sessions.length}회차
+              {s.addCount > 0 && (
+                <span style={{ color: '#0f766e', marginLeft: '6px' }}>(추가 {s.addCount}회)</span>
+              )}
               {mode === 'current' && s.absentCount > 0 && (
                 <span style={{ color: '#dc2626', marginLeft: '6px' }}>(결석 {s.absentCount}회)</span>
               )}
